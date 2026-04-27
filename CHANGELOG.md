@@ -18,7 +18,9 @@
 - `CompanionPanelView.swift` — Model picker now shows provider-aware presets (Sonnet/Opus/Gemini for OpenRouter, etc.) plus custom model ID text field. Added settings gear button in footer with popover.
 - `worker/src/index.ts` — Added `OPENROUTER_API_KEY` to Env interface, new `/chat-openrouter` route.
 
-### Planned (In Progress)
-- ModelCatalogService for dynamic OpenRouter model list
-- ElementLocationDetector graceful fallback for non-Anthropic providers
-- Voice provider protocols (future local TTS/STT)
+- `ModelCatalogService.swift` — Fetches, caches, and filters models from OpenRouter's `/api/v1/models` endpoint. Groups by provider, supports vision-only filtering.
+- `VoiceProvider.swift` — Protocol stubs (`TTSProvider`, `STTProvider`) for future local TTS/STT (Whisper, Qwen3)
+
+### Notes
+- `ElementLocationDetector.swift` is defined but not currently called from the active codebase — no changes needed for now.
+- `ClaudeAPI.swift` is preserved unchanged as the backend for `AnthropicProvider` (Worker Proxy mode).
