@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var showSettings: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -598,17 +599,33 @@ struct CompanionPanelView: View {
 
     // MARK: - Model Picker
 
+    @State private var modelInput: String = ""
+
     private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
 
-            Spacer()
+                Spacer()
 
+                Text(companionManager.providerManager.configuration.activeProvider.displayName)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+            }
+
+            // Quick presets based on provider
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                ForEach(modelPresets, id: \.id) { preset in
+                    modelOptionButton(label: preset.label, modelID: preset.id)
+                }
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -618,14 +635,58 @@ struct CompanionPanelView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
+
+            // Custom model ID input
+            TextField("or enter model ID...", text: $modelInput)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(DS.Colors.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(DS.Colors.surface2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+                .onAppear { modelInput = companionManager.selectedModel }
+                .onSubmit {
+                    if !modelInput.isEmpty {
+                        companionManager.setSelectedModel(modelInput)
+                    }
+                }
         }
         .padding(.vertical, 4)
+    }
+
+    private var modelPresets: [(id: String, label: String)] {
+        switch companionManager.providerManager.configuration.activeProvider {
+        case .workerProxy:
+            return [
+                (id: "claude-sonnet-4-6", label: "Sonnet"),
+                (id: "claude-opus-4-6", label: "Opus"),
+            ]
+        case .openRouter:
+            return [
+                (id: "anthropic/claude-sonnet-4-6", label: "Sonnet"),
+                (id: "anthropic/claude-opus-4-6", label: "Opus"),
+                (id: "google/gemini-2.5-pro", label: "Gemini"),
+            ]
+        case .openClaw:
+            return [
+                (id: "anthropic/claude-sonnet-4-6", label: "Sonnet"),
+                (id: "openai/gpt-4o", label: "GPT-4o"),
+            ]
+        }
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
         let isSelected = companionManager.selectedModel == modelID
         return Button(action: {
             companionManager.setSelectedModel(modelID)
+            modelInput = modelID
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
@@ -695,6 +756,17 @@ struct CompanionPanelView: View {
             }
             .buttonStyle(.plain)
             .pointerCursor()
+
+            Button(action: { showSettings.toggle() }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .popover(isPresented: $showSettings) {
+                SettingsView(providerManager: companionManager.providerManager)
+            }
 
             if companionManager.hasCompletedOnboarding {
                 Spacer()
