@@ -116,6 +116,66 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    // MARK: - LLM Provider (bring your own key)
+
+    /// Which LLM backend drives responses: the bundled Clicky Cloud (Claude via
+    /// the Cloudflare Worker) or a user-supplied OpenRouter account.
+    @Published var llmProvider: CompanionLLMProvider =
+        CompanionLLMProvider(rawValue: UserDefaults.standard.string(forKey: "llmProvider") ?? "") ?? .clickyCloud
+
+    /// The OpenRouter model identifier used when `llmProvider` is `.openRouter`.
+    /// Any vision-capable model on OpenRouter works (e.g. "openai/gpt-4o").
+    @Published var openRouterModel: String =
+        UserDefaults.standard.string(forKey: "openRouterModel") ?? "openai/gpt-4o"
+
+    /// The user's OpenRouter API key, loaded from the Keychain. Stored here so
+    /// the settings UI can bind to it; the source of truth on disk is the Keychain.
+    @Published var openRouterAPIKey: String =
+        KeychainHelper.shared.readString(forKey: "openRouterAPIKey") ?? ""
+
+    /// Lazily created OpenRouter client, reused across requests so its TLS
+    /// connection stays warm. Built on first use once a key is present.
+    private var openRouterAPI: OpenRouterAPI?
+
+    func setLLMProvider(_ provider: CompanionLLMProvider) {
+        llmProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "llmProvider")
+    }
+
+    func setOpenRouterModel(_ model: String) {
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        openRouterModel = trimmedModel
+        UserDefaults.standard.set(trimmedModel, forKey: "openRouterModel")
+        openRouterAPI?.model = trimmedModel
+    }
+
+    func setOpenRouterAPIKey(_ key: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        openRouterAPIKey = trimmedKey
+        KeychainHelper.shared.setString(trimmedKey, forKey: "openRouterAPIKey")
+        openRouterAPI?.apiKey = trimmedKey
+    }
+
+    /// Returns the chat backend to use for the current request based on the
+    /// selected provider. Falls back to Clicky Cloud if OpenRouter is selected
+    /// but no API key has been entered yet.
+    private func resolvedChatProvider() -> CompanionChatProvider {
+        guard llmProvider == .openRouter,
+              !openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return claudeAPI
+        }
+
+        if let existingOpenRouterAPI = openRouterAPI {
+            existingOpenRouterAPI.apiKey = openRouterAPIKey
+            existingOpenRouterAPI.model = openRouterModel
+            return existingOpenRouterAPI
+        }
+
+        let newOpenRouterAPI = OpenRouterAPI(apiKey: openRouterAPIKey, model: openRouterModel)
+        openRouterAPI = newOpenRouterAPI
+        return newOpenRouterAPI
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -610,7 +670,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await resolvedChatProvider().analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -982,9 +1042,10 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await resolvedChatProvider().analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
+                    conversationHistory: [],
                     userPrompt: "look around my screen and find something interesting to point at",
                     onTextChunk: { _ in }
                 )

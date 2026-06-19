@@ -29,7 +29,7 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
+                aiProviderSection
                     .padding(.horizontal, 16)
             }
 
@@ -591,6 +591,129 @@ struct CompanionPanelView: View {
 
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - AI Provider (bring your own key)
+
+    /// Groups the provider toggle with the controls for the selected provider:
+    /// the bundled Claude model picker, or the OpenRouter key + model fields.
+    private var aiProviderSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            providerPickerRow
+
+            if companionManager.llmProvider == .openRouter {
+                openRouterKeyField
+                openRouterModelField
+            } else {
+                modelPickerRow
+            }
+        }
+    }
+
+    private var providerPickerRow: some View {
+        HStack {
+            Text("Provider")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                providerOptionButton(label: "Clicky Cloud", provider: .clickyCloud)
+                providerOptionButton(label: "OpenRouter", provider: .openRouter)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func providerOptionButton(label: String, provider: CompanionLLMProvider) -> some View {
+        let isSelected = companionManager.llmProvider == provider
+        return Button(action: {
+            companionManager.setLLMProvider(provider)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var openRouterKeyField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("OpenRouter API Key")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            SecureField("sk-or-...", text: Binding(
+                get: { companionManager.openRouterAPIKey },
+                set: { companionManager.setOpenRouterAPIKey($0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundColor(DS.Colors.textPrimary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+
+            Text("Stored securely in your macOS Keychain. Get a key at openrouter.ai/keys.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var openRouterModelField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Model")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            TextField("openai/gpt-4o", text: Binding(
+                get: { companionManager.openRouterModel },
+                set: { companionManager.setOpenRouterModel($0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundColor(DS.Colors.textPrimary)
+            .autocorrectionDisabled(true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+
+            Text("Any vision-capable model, e.g. anthropic/claude-sonnet-4.5 or google/gemini-2.0-flash-001.")
+                .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
         }
         .padding(.vertical, 4)

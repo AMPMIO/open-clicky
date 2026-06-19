@@ -5,16 +5,18 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to an LLM. The LLM responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements the LLM references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+This is **Open Clicky** — an open, bring-your-own-keys evolution of the closed-source Clicky. The goal is to do everything Clicky can do while letting the user supply their own LLM key (via OpenRouter) and choose any model, instead of being locked to the bundled Claude backend.
+
+The bundled keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app. When the user supplies their own OpenRouter key, the app calls OpenRouter directly and the key is stored in the macOS Keychain.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: Two interchangeable backends behind the `CompanionChatProvider` protocol — (1) **Clicky Cloud**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via the Cloudflare Worker proxy, and (2) **OpenRouter (bring your own key)**: any vision-capable model on OpenRouter, called directly with the user's own API key. Both stream via SSE. The user picks the provider and model in the menu bar panel; the OpenRouter key is stored in the macOS Keychain.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -66,8 +68,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
+| `CompanionChatProvider.swift` | ~50 | Provider-agnostic protocol for the streaming vision chat backend, plus the `CompanionLLMProvider` enum (`clickyCloud` / `openRouter`). Lets `CompanionManager` swap the LLM without touching the response pipeline. Both `ClaudeAPI` and `OpenRouterAPI` conform. |
+| `ClaudeAPI.swift` | ~291 | Claude vision API client (Clicky Cloud backend) with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. Conforms to `CompanionChatProvider`. |
+| `OpenRouterAPI.swift` | ~210 | Bring-your-own-key OpenRouter vision chat client. OpenAI-compatible Chat Completions with SSE streaming; called directly (not via the Worker) with the user's key. Conforms to `CompanionChatProvider`. |
+| `KeychainHelper.swift` | ~95 | Thin macOS Keychain wrapper for storing user-provided secrets (the OpenRouter API key) securely instead of in UserDefaults. |
+| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client (legacy/unused — not wired into model selection). |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
