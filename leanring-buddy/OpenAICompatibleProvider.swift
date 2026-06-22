@@ -249,6 +249,7 @@ enum ProviderError: LocalizedError {
     case invalidResponseFormat
     case apiError(statusCode: Int, message: String)
     case missingAPIKey(provider: String)
+    case notConfigured(provider: String, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -260,6 +261,8 @@ enum ProviderError: LocalizedError {
             return "API Error (\(code)): \(message)"
         case .missingAPIKey(let provider):
             return "No API key configured for \(provider)"
+        case .notConfigured(let provider, let reason):
+            return "\(provider) isn't set up yet. \(reason)"
         }
     }
 }

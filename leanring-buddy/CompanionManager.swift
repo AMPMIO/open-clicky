@@ -68,15 +68,13 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy (used for TTS, transcription,
-    /// and as fallback LLM provider).
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
-
     /// Multi-provider LLM manager. Handles OpenRouter, OpenClaw, and Worker Proxy modes.
     let providerManager = ProviderManager()
 
+    /// TTS proxy reads the configured Worker base URL (single source of truth in
+    /// ProviderConfiguration) so the Settings "Worker URL" field reaches TTS too.
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        return ElevenLabsTTSClient(proxyURL: "\(ProviderConfiguration.workerBaseURLFromDefaults)/tts")
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -180,9 +178,8 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        // TLS warmup now happens inside each provider's initializer (ProviderManager
+        // builds currentProvider on init), so no eager touch is needed here.
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -589,6 +586,13 @@ final class CompanionManager: ObservableObject {
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
+            // Don't capture the user's screens (or fire a request) if the active
+            // provider can't actually answer — surface a clear setup message instead.
+            guard providerManager.configuration.isActiveProviderConfigured else {
+                speakProviderNotConfigured()
+                return
+            }
+
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -765,6 +769,18 @@ final class CompanionManager: ObservableObject {
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    /// Speaks a short setup hint via macOS system TTS when the user talks to
+    /// Clicky before configuring an LLM provider. Uses NSSpeechSynthesizer so it
+    /// works even when the Worker/ElevenLabs proxy isn't set up either.
+    private func speakProviderNotConfigured() {
+        let providerName = providerManager.configuration.activeProvider.displayName
+        print("⚙️ Active provider not configured: \(providerName)")
+        let synthesizer = NSSpeechSynthesizer()
+        synthesizer.startSpeaking("i'm not set up yet. open clicky settings and add your \(providerName) details.")
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
     }
 
     // MARK: - Point Tag Parsing
@@ -969,6 +985,12 @@ final class CompanionManager: ObservableObject {
     func performOnboardingDemoInteraction() {
         // Don't interrupt an active voice response
         guard voiceState == .idle || voiceState == .responding else { return }
+        // Skip the demo silently if the provider isn't set up — don't pop an
+        // error over the onboarding video.
+        guard providerManager.configuration.isActiveProviderConfigured else {
+            print("🎯 Onboarding demo skipped: active provider not configured")
+            return
+        }
 
         Task {
             do {

@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var workerURLInput: String = ""
     @State private var connectionTestResult: String?
     @State private var isTestingConnection: Bool = false
+    @State private var openClawEndpointError: String?
+    @State private var workerURLError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -144,9 +146,16 @@ struct SettingsView: View {
                             .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
                     )
                     .onChange(of: openClawEndpointInput) { newValue in
+                        openClawEndpointError = Self.endpointValidationError(newValue)
                         providerManager.configuration.openClawEndpoint = newValue
                         providerManager.updateProvider()
                     }
+
+                if let openClawEndpointError {
+                    Text(openClawEndpointError)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.warningText)
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -195,9 +204,16 @@ struct SettingsView: View {
                         .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
                 )
                 .onChange(of: workerURLInput) { newValue in
+                    workerURLError = Self.endpointValidationError(newValue)
                     providerManager.configuration.workerBaseURL = newValue
                     providerManager.updateProvider()
                 }
+
+            if let workerURLError {
+                Text(workerURLError)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.warningText)
+            }
 
             Text("Keys are stored on the Worker, not locally.")
                 .font(.system(size: 10))
@@ -247,6 +263,32 @@ struct SettingsView: View {
         openClawTokenInput = providerManager.configuration.openClawToken ?? ""
         openClawEndpointInput = providerManager.configuration.openClawEndpoint
         workerURLInput = providerManager.configuration.workerBaseURL
+        openClawEndpointError = Self.endpointValidationError(openClawEndpointInput)
+        workerURLError = Self.endpointValidationError(workerURLInput)
+    }
+
+    /// Returns a user-facing warning if `endpoint` would be blocked by App
+    /// Transport Security or is malformed. Remote hosts must use https; only
+    /// loopback / .local hosts may use http (matches the Info.plist ATS policy).
+    static func endpointValidationError(_ endpoint: String) -> String? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host, !host.isEmpty else {
+            return "Enter a full URL like https://host:port"
+        }
+        switch scheme {
+        case "https":
+            return nil
+        case "http":
+            let lowerHost = host.lowercased()
+            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1"
+                || lowerHost == "::1" || lowerHost.hasSuffix(".local")
+            return isLoopback ? nil : "Remote endpoints must use https — http is blocked except for localhost."
+        default:
+            return "URL must start with http:// or https://"
+        }
     }
 
     private func testConnection() {

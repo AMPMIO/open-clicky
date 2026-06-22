@@ -151,6 +151,11 @@ struct BlueCursorView: View {
     /// Timer driving the frame-by-frame bezier arc flight animation.
     /// Invalidated when the flight completes, is canceled, or the view disappears.
     @State private var navigationAnimationTimer: Timer?
+    /// Welcome-text typing timer, tracked so it can be cancelled on teardown.
+    @State private var welcomeAnimationTimer: Timer?
+    /// Set true in .onDisappear so timers / asyncAfter chains from a torn-down
+    /// overlay generation stop firing and don't mutate shared companion state.
+    @State private var isViewTornDown = false
 
     /// Scale factor applied to the buddy triangle during flight. Grows to ~1.3x
     /// at the midpoint of the arc and shrinks back to 1.0x on landing, creating
@@ -364,8 +369,10 @@ struct BlueCursorView: View {
             }
         }
         .onDisappear {
+            isViewTornDown = true
             timer?.invalidate()
             navigationAnimationTimer?.invalidate()
+            welcomeAnimationTimer?.invalidate()
             companionManager.tearDownOnboardingVideo()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
@@ -590,10 +597,10 @@ struct BlueCursorView: View {
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                guard !self.isViewTornDown, self.buddyNavigationMode == .pointingAtTarget else { return }
                 self.navigationBubbleOpacity = 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                    guard !self.isViewTornDown, self.buddyNavigationMode == .pointingAtTarget else { return }
                     self.startFlyingBackToCursor()
                 }
             }
@@ -607,7 +614,7 @@ struct BlueCursorView: View {
         characterIndex: Int,
         onComplete: @escaping () -> Void
     ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
+        guard !isViewTornDown, buddyNavigationMode == .pointingAtTarget else { return }
         guard characterIndex < phrase.count else {
             onComplete()
             return
@@ -680,14 +687,22 @@ struct BlueCursorView: View {
         }
 
         var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
+        welcomeAnimationTimer?.invalidate()
+        welcomeAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
+            // Stop if this overlay generation was torn down mid-animation.
+            guard !self.isViewTornDown else {
+                timer.invalidate()
+                return
+            }
             guard currentIndex < self.fullWelcomeMessage.count else {
                 timer.invalidate()
                 // Hold the text for 2 seconds, then fade it out
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    guard !self.isViewTornDown else { return }
                     self.bubbleOpacity = 0.0
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    guard !self.isViewTornDown else { return }
                     self.showWelcome = false
                     // Start the onboarding video right after the welcome text disappears
                     self.companionManager.setupOnboardingVideo()

@@ -549,9 +549,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
+        // Capture THIS session strongly for the real-time audio tap instead of
+        // reading the @MainActor `activeTranscriptionSession` property from the
+        // audio render thread (a cross-actor data race). The tap is removed
+        // before the next session installs its own, so this stays correct.
+        let sessionForAudioTap = activeTranscriptionSession
+
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
+            sessionForAudioTap.appendAudioBuffer(buffer)
             self?.updateAudioPowerLevel(from: buffer)
         }
 
