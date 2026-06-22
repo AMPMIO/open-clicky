@@ -302,6 +302,119 @@ final class CompanionManager: ObservableObject {
     you are quietly watching the user's screen in the background. only speak up when there is something genuinely useful and timely to say (an error you can explain, a clearly stuck state, an obvious next step). be brief and non-intrusive — if in doubt, say nothing. respond with 'NUDGE: <one short sentence>' or exactly 'NONE'. never point or act in this mode.
     """
 
+    // MARK: - Spoken Macros (F5)
+
+    private var macroRecordingName: String?
+    private var macroRecordingSteps: [String] = []
+    private var macroReplayTask: Task<Void, Never>?
+    private var isReplayingMacro = false
+
+    /// Intercepts voice macro commands (record / save / cancel / run / delete / list).
+    /// Returns true when the utterance was a macro command (so it must not be sent to
+    /// the model as a normal request).
+    private func handleSpokenMacroCommand(_ transcript: String) -> Bool {
+        // During replay, steps must run as normal prompts — never re-intercepted as
+        // macro commands (which would recurse on a "run macro …" step).
+        if isReplayingMacro { return false }
+
+        let lower = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // While recording, every utterance is a step unless it's a control phrase.
+        if let recordingName = macroRecordingName {
+            if lower == "save macro" || lower == "stop recording" || lower == "save the macro" {
+                guard !macroRecordingSteps.isEmpty else {
+                    speakSystemMessage("that macro has no steps yet. say a step, or say cancel macro.")
+                    return true
+                }
+                SpokenMacroStore.shared.save(name: recordingName, steps: macroRecordingSteps)
+                let stepCount = macroRecordingSteps.count
+                macroRecordingName = nil
+                macroRecordingSteps = []
+                speakSystemMessage("saved macro \(recordingName) with \(stepCount) step\(stepCount == 1 ? "" : "s").")
+                return true
+            }
+            if lower == "cancel macro" || lower == "cancel recording" || lower == "discard macro" {
+                macroRecordingName = nil
+                macroRecordingSteps = []
+                speakSystemMessage("discarded the macro.")
+                return true
+            }
+            macroRecordingSteps.append(transcript)
+            speakSystemMessage("added step \(macroRecordingSteps.count).")
+            return true
+        }
+
+        if let name = Self.parseMacroName(from: lower, afterAnyOf: ["record a macro called ", "record a macro named ", "record macro ", "new macro "]) {
+            macroRecordingName = name
+            macroRecordingSteps = []
+            speakSystemMessage("recording macro \(name). say each step, then say save macro.")
+            return true
+        }
+
+        if let name = Self.parseMacroName(from: lower, afterAnyOf: ["run macro ", "play macro ", "run the macro ", "execute macro "]) {
+            guard let macro = SpokenMacroStore.shared.macro(named: name) else {
+                speakSystemMessage("i don't have a macro called \(name).")
+                return true
+            }
+            runMacro(macro)
+            return true
+        }
+
+        if let name = Self.parseMacroName(from: lower, afterAnyOf: ["delete macro ", "remove macro ", "forget macro "]) {
+            SpokenMacroStore.shared.delete(named: name)
+            speakSystemMessage("deleted macro \(name).")
+            return true
+        }
+
+        if lower == "list macros" || lower == "list my macros" || lower == "what macros do i have" {
+            let names = SpokenMacroStore.shared.macros.map { $0.name }
+            speakSystemMessage(names.isEmpty ? "you have no macros yet." : "your macros: \(names.joined(separator: ", ")).")
+            return true
+        }
+
+        return false
+    }
+
+    /// Extracts the macro name following any of the given command prefixes.
+    private static func parseMacroName(from transcript: String, afterAnyOf prefixes: [String]) -> String? {
+        for prefix in prefixes where transcript.hasPrefix(prefix) {
+            let name = String(transcript.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { return name }
+        }
+        return nil
+    }
+
+    /// Replays a macro by running each step through the normal companion pipeline in
+    /// order, so each step re-resolves against the LIVE screen (and any actuation step
+    /// still passes Hands-On confirmation). ponytail: steps that propose a confirmable
+    /// action will pause for confirmation; deterministic action-replay is a follow-up.
+    private func runMacro(_ macro: SpokenMacro) {
+        macroReplayTask?.cancel()
+        speakSystemMessage("running macro \(macro.name).")
+        macroReplayTask = Task { @MainActor in
+            isReplayingMacro = true
+            defer { isReplayingMacro = false }
+            for step in macro.steps {
+                guard !Task.isCancelled, macroRecordingName == nil else { break }
+                sendTranscriptToClaudeWithScreenshot(transcript: step)
+                // Let each step's response + TTS finish before the next (bounded wait).
+                var waitedTicks = 0
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                while (elevenLabsTTSClient.isPlaying || voiceState == .processing), waitedTicks < 60 {
+                    if Task.isCancelled { return }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    waitedTicks += 1
+                }
+                // If a step proposed a confirmable action, pause replay so the next
+                // saved step isn't swallowed by the confirmation handler.
+                if pendingHandsOnAction != nil || pendingTerminalDispatch != nil {
+                    speakSystemMessage("macro paused — confirm the pending action first.")
+                    break
+                }
+            }
+        }
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -505,6 +618,7 @@ final class CompanionManager: ObservableObject {
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
         stopWatchModeTimer()
+        macroReplayTask?.cancel()
     }
 
     func refreshAllPermissions() {
@@ -682,6 +796,9 @@ final class CompanionManager: ObservableObject {
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
+            // A real push-to-talk interrupts any macro replay in progress.
+            macroReplayTask?.cancel()
+
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
             transientHideTask = nil
@@ -840,6 +957,12 @@ final class CompanionManager: ObservableObject {
         if let pending = pendingTerminalDispatch {
             pendingTerminalDispatch = nil
             resolveTerminalConfirmation(transcript: transcript, pending: pending)
+            return
+        }
+
+        // Spoken Macros (F5): record / run / manage named macros by voice. Handled
+        // before a normal request so macro commands aren't sent to the model.
+        if handleSpokenMacroCommand(transcript) {
             return
         }
 

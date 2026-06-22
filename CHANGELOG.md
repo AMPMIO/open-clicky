@@ -132,6 +132,20 @@ heads-up (e.g. explaining an error). Off by default.
 - **OC-57 — Guardrails.** Off by default, rate-limited (≥90s between nudges), only runs while idle
   and with a ready provider, and never points/acts in this mode. Settings toggle. (`SettingsView.swift`)
 
+### F5 — Spoken Macros (epic OC-10)
+
+Record a named workflow by voice and replay it later — built on F1's actuation.
+
+- **OC-56 / OC-59 — Record + store.** "record a macro called <name>" starts recording; each
+  following utterance becomes a step; "save macro" stores it. Named macros persist via
+  `SpokenMacroStore`. (`SpokenMacroStore.swift` new)
+- **OC-64 — Replay.** "run macro <name>" replays each step through the normal companion pipeline
+  in order, so every step re-resolves against the LIVE screen (point/act), with Hands-On
+  confirmation still gating any action. *(ponytail: plain-instruction steps, not recorded AX
+  events — robust to layout changes.)* (`CompanionManager.swift`)
+- **OC-66 — Manage.** By voice: run / delete / list; Settings lists saved macros with a delete
+  button. (`SettingsView.swift`)
+
 ### F6 — Sign in with ChatGPT (OAuth) (epic OC-11)
 
 - **OC-60 — Feasibility spike (go/no-go).** Riding a ChatGPT *subscription* from a third-party

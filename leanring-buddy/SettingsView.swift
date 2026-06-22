@@ -29,6 +29,7 @@ struct SettingsView: View {
     @State private var showPurgeConfirmation = false
     @State private var excludeAppInput = ""
     @ObservedObject private var oauthManager = OAuthSignInManager.shared
+    @ObservedObject private var macroStore = SpokenMacroStore.shared
     @State private var oauthClientID = ""
     @State private var oauthAuthorizeURL = ""
     @State private var oauthTokenURL = ""
@@ -77,6 +78,8 @@ struct SettingsView: View {
             liveCompanionSection
 
             watchModeSection
+
+            macrosSection
 
             chatGPTSignInSection
 
@@ -467,6 +470,35 @@ struct SettingsView: View {
             Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription goes through your Worker (set OPENAI_API_KEY on the Worker).")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+    }
+
+    // MARK: - Spoken Macros
+
+    private var macrosSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Spoken Macros")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text("Say \"record a macro called <name>\", say each step, then \"save macro\". Replay with \"run macro <name>\" (delete/list also work by voice).")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            ForEach(macroStore.macros) { macro in
+                HStack {
+                    Text("\(macro.name) · \(macro.steps.count) step\(macro.steps.count == 1 ? "" : "s")")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Spacer()
+                    Button(action: { macroStore.delete(named: macro.name) }) {
+                        Text("Delete")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.warningText)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
