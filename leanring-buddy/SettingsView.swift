@@ -453,7 +453,7 @@ struct SettingsView: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
 
-            Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription uses OpenAI (set OpenAIAPIKey in Info.plist).")
+            Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription goes through your Worker (set OPENAI_API_KEY on the Worker).")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
         }

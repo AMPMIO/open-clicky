@@ -5,9 +5,10 @@
  * ships with raw API keys. Keys are stored as Cloudflare secrets.
  *
  * Routes:
- *   POST /chat            → Anthropic Messages API (streaming)
- *   POST /tts             → ElevenLabs TTS API
+ *   POST /chat             → Anthropic Messages API (streaming)
+ *   POST /tts              → ElevenLabs TTS API
  *   POST /transcribe-token → AssemblyAI token
+ *   POST /transcribe-audio → OpenAI Whisper (Live Companion system-audio WAV)
  *
  * Note: OpenRouter mode runs client-side (the app calls openrouter.ai directly
  * with a user-supplied, Keychain-stored key), so the Worker holds no OpenRouter
@@ -19,6 +20,7 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  OPENAI_API_KEY: string;
 }
 
 export default {
@@ -40,6 +42,10 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/transcribe-audio") {
+        return await handleTranscribeAudio(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
@@ -81,6 +87,54 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       "content-type": response.headers.get("content-type") || "text/event-stream",
       "cache-control": "no-cache",
     },
+  });
+}
+
+async function handleTranscribeAudio(request: Request, env: Env): Promise<Response> {
+  // Forward the app's multipart WAV upload to OpenAI Whisper with the server-held
+  // key, so the key never ships in the app and system audio stays within the proxy.
+  const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // OpenAI per-file limit; also caps cost abuse
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > MAX_AUDIO_BYTES) {
+    return new Response(
+      JSON.stringify({ error: "Audio file too large (max 25MB)" }),
+      { status: 413, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  const contentType = request.headers.get("content-type") || "multipart/form-data";
+  const body = await request.arrayBuffer();
+
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), 30000);
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+        "content-type": contentType,
+      },
+      body,
+      signal: abortController.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`[/transcribe-audio] OpenAI error ${response.status}: ${errorBody}`);
+    return new Response(errorBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const data = await response.text();
+  return new Response(data, {
+    status: 200,
+    headers: { "content-type": "application/json" },
   });
 }
 

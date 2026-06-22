@@ -99,8 +99,21 @@ Lets Clicky hear what's playing on the Mac (a call, tutorial, video) AND see the
 - **OC-58 / OC-61 — Fusion + summary.** When Live Companion is on, a rolling ~3-min audio buffer
   is transcribed and folded into the prompt alongside the screenshots, so "what did they just
   ask?" / "summarize the last few minutes" work. (`CompanionManager.swift`)
-- Opt-in toggle in Settings (off by default; needs Screen Recording + an OpenAI key for
-  transcription). (`SettingsView.swift`)
+- Opt-in toggle in Settings (off by default; needs Screen Recording + a Worker with
+  `OPENAI_API_KEY`). (`SettingsView.swift`)
+
+#### F4 security/privacy hardening — Codex review follow-ups (OC-92–94)
+
+- **OC-92 (critical) — System audio stays within the proxy.** Transcription no longer posts
+  straight to OpenAI with an on-device key; the app uploads the WAV to a new Worker
+  `/transcribe-audio` route that holds the OpenAI key server-side. (`worker/src/index.ts`,
+  `SystemAudioCaptureService.swift`)
+- **OC-93 — Ambient audio is untrusted.** The transcript is wrapped in a delimited UNTRUSTED
+  block and a system instruction forbids treating it as the user's request or letting it trigger
+  Hands-On/Terminal actions. (`CompanionManager.swift`)
+- **OC-94 — Capture lifecycle.** Disabling mid-startup now stops the stream, late callbacks are
+  dropped once disabled, and a failed start rolls the toggle back. (`CompanionManager.swift`)
+- **OC-95 — Robust audio conversion (AVAudioConverter)** is tracked as a follow-up.
 
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 

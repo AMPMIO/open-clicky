@@ -63,13 +63,13 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
         isCapturing = false
     }
 
-    /// One-shot transcription of buffered PCM16 mono audio via OpenAI's
-    /// transcription API (reuses the `OpenAIAPIKey` from Info.plist — the same key
-    /// the upload-based STT fallback uses). Returns "" when no key is configured.
+    /// One-shot transcription of buffered PCM16 mono audio. Posts a WAV to the
+    /// Worker's `/transcribe-audio` route (which holds the OpenAI key server-side),
+    /// so no key ships on-device and the audio stays within the proxy trust
+    /// boundary. Returns "" when the Worker URL isn't configured.
     nonisolated static func transcribe(pcm16: Data, sampleRate: Int) async throws -> String {
-        guard let apiKey = AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey"),
-              !apiKey.isEmpty, !pcm16.isEmpty,
-              let url = URL(string: "https://api.openai.com/v1/audio/transcriptions") else {
+        guard !pcm16.isEmpty,
+              let url = ProviderConfiguration.workerRouteURL("/transcribe-audio") else {
             return ""
         }
         let wav = BuddyWAVFileBuilder.buildWAVData(fromPCM16MonoAudio: pcm16, sampleRate: sampleRate)
@@ -78,7 +78,6 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 60
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         var body = Data()
