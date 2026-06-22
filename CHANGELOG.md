@@ -115,6 +115,23 @@ Lets Clicky hear what's playing on the Mac (a call, tutorial, video) AND see the
   dropped once disabled, and a failed start rolls the toggle back. (`CompanionManager.swift`)
 - **OC-95 — Robust audio conversion (AVAudioConverter)** is tracked as a follow-up.
 
+### F3 — Watch Mode (epic OC-8)
+
+Opt-in, quiet, proactive nudges — Clicky watches the screen and occasionally offers a brief
+heads-up (e.g. explaining an error). Off by default.
+
+- **OC-47 — Change-detection gate.** A debounced poll (every 12s) computes a perceptual
+  average-hash (8×8 grayscale) of the cursor screen and skips static screens by Hamming distance.
+  *(ponytail: a poll + aHash gate instead of a continuous low-fps SCStream — same "ignore static
+  screens" outcome, far less machinery.)* (`WatchModeSupport.swift` new)
+- **OC-52 — Cheap first-pass gate.** Before escalating to the vision model, a fast Vision OCR pass
+  checks for actionable keywords (error/failed/exception/…), so the full model is only invoked
+  when something useful is likely on screen.
+- **OC-55 — Proactive surfacing.** A confirmed nudge is spoken via the existing transient-cursor +
+  system-voice path (`speakSystemMessage`) — quiet, no popup. (`CompanionManager.swift`)
+- **OC-57 — Guardrails.** Off by default, rate-limited (≥90s between nudges), only runs while idle
+  and with a ready provider, and never points/acts in this mode. Settings toggle. (`SettingsView.swift`)
+
 ### F6 — Sign in with ChatGPT (OAuth) (epic OC-11)
 
 - **OC-60 — Feasibility spike (go/no-go).** Riding a ChatGPT *subscription* from a third-party

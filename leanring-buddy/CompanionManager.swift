@@ -217,6 +217,91 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Watch Mode (proactive nudges)
+
+    /// Opt-in: quietly watch the screen and offer the occasional brief, timely nudge.
+    /// Off by default.
+    @Published var isWatchModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isWatchModeEnabled")
+    private var watchModeTimer: Timer?
+    private var lastWatchFrameHash: UInt64?
+    private var lastWatchNudgeAt: Date?
+    private let watchPollInterval: TimeInterval = 12
+    private let watchMinNudgeGap: TimeInterval = 90
+    private let watchChangeThreshold = 8 // Hamming distance over the 64-bit aHash
+
+    /// Retained synthesizer for short system-voice lines (nudges, setup hints). Must
+    /// be an instance property — a local one deallocates mid-utterance, cutting off
+    /// the speech.
+    private let systemSpeechSynthesizer = NSSpeechSynthesizer()
+
+    func setWatchModeEnabled(_ enabled: Bool) {
+        isWatchModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isWatchModeEnabled")
+        if enabled { startWatchModeTimer() } else { stopWatchModeTimer() }
+    }
+
+    private func startWatchModeTimer() {
+        stopWatchModeTimer()
+        lastWatchFrameHash = nil
+        watchModeTimer = Timer.scheduledTimer(withTimeInterval: watchPollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.watchModeTick() }
+        }
+    }
+
+    private func stopWatchModeTimer() {
+        watchModeTimer?.invalidate()
+        watchModeTimer = nil
+    }
+
+    /// One Watch Mode pass: capture → cheap change gate → cheap text gate → escalate
+    /// to the vision model for an optional brief nudge. Every gate fails closed (skip).
+    private func watchModeTick() async {
+        guard isWatchModeEnabled, providerManager.isCurrentProviderReady else { return }
+        // Never watch while the user is actively interacting with Clicky.
+        guard voiceState == .idle else { return }
+
+        guard let captures = try? await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(),
+              let cursorScreen = captures.first(where: { $0.isCursorScreen }) ?? captures.first else { return }
+        let imageData = cursorScreen.imageData
+
+        // OC-47: change-detection gate — ignore static screens.
+        if let hash = WatchModeChangeDetector.averageHash(of: imageData) {
+            if let last = lastWatchFrameHash,
+               WatchModeChangeDetector.hammingDistance(last, hash) < watchChangeThreshold {
+                return
+            }
+            lastWatchFrameHash = hash
+        }
+
+        // OC-57: rate limit so nudges stay occasional.
+        if let last = lastWatchNudgeAt, Date().timeIntervalSince(last) < watchMinNudgeGap { return }
+
+        // OC-52: cheap OCR pre-gate — only escalate when something looks actionable.
+        guard WatchModeTextGate.looksActionable(in: imageData) else { return }
+
+        let labeledImages = [(data: imageData, label: cursorScreen.label)]
+        guard let response = try? await providerManager.currentProvider.chatStreaming(
+            images: labeledImages,
+            systemPrompt: Self.watchModeInstructions,
+            conversationHistory: [],
+            userPrompt: "Look at my screen. If there's something genuinely worth a brief, helpful heads-up right now, reply 'NUDGE: <one short sentence>'. Otherwise reply exactly 'NONE'.",
+            model: selectedModel,
+            onTextChunk: { _ in }
+        ) else { return }
+
+        let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let nudgeRange = text.range(of: "NUDGE:", options: .caseInsensitive) else { return }
+        let nudge = String(text[nudgeRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nudge.isEmpty else { return }
+        lastWatchNudgeAt = Date()
+        // OC-55: surface as a quiet nudge (transient cursor + short spoken message).
+        speakSystemMessage(nudge)
+    }
+
+    private static let watchModeInstructions = """
+    you are quietly watching the user's screen in the background. only speak up when there is something genuinely useful and timely to say (an error you can explain, a clearly stuck state, an obvious next step). be brief and non-intrusive — if in doubt, say nothing. respond with 'NUDGE: <one short sentence>' or exactly 'NONE'. never point or act in this mode.
+    """
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -305,6 +390,11 @@ final class CompanionManager: ObservableObject {
                     print("⚠️ Live Companion: failed to resume system-audio capture: \(error)")
                 }
             }
+        }
+
+        // Resume Watch Mode if it was enabled before a restart.
+        if isWatchModeEnabled {
+            startWatchModeTimer()
         }
     }
 
@@ -414,6 +504,7 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        stopWatchModeTimer()
     }
 
     func refreshAllPermissions() {
@@ -1061,8 +1152,7 @@ final class CompanionManager: ObservableObject {
     /// ElevenLabs is down.
     private func speakCreditsErrorFallback() {
         let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+        systemSpeechSynthesizer.startSpeaking(utterance)
         voiceState = .responding
     }
 
@@ -1072,16 +1162,14 @@ final class CompanionManager: ObservableObject {
     private func speakProviderNotConfigured() {
         let providerName = providerManager.configuration.activeProvider.displayName
         print("⚙️ Active provider not configured: \(providerName)")
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking("i'm not set up yet. open clicky settings and add your \(providerName) details.")
+        systemSpeechSynthesizer.startSpeaking("i'm not set up yet. open clicky settings and add your \(providerName) details.")
         voiceState = .idle
         scheduleTransientHideIfNeeded()
     }
 
     /// Speaks a short confirmation/status line via macOS system TTS.
     private func speakSystemMessage(_ text: String) {
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(text)
+        systemSpeechSynthesizer.startSpeaking(text)
         voiceState = .idle
         scheduleTransientHideIfNeeded()
     }

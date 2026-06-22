@@ -76,6 +76,8 @@ struct SettingsView: View {
 
             liveCompanionSection
 
+            watchModeSection
+
             chatGPTSignInSection
 
             Spacer()
@@ -463,6 +465,27 @@ struct SettingsView: View {
             .controlSize(.mini)
 
             Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription goes through your Worker (set OPENAI_API_KEY on the Worker).")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+    }
+
+    // MARK: - Watch Mode
+
+    private var watchModeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { companionManager.isWatchModeEnabled },
+                set: { companionManager.setWatchModeEnabled($0) }
+            )) {
+                Text("Watch Mode (proactive nudges)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            Text("Quietly watches your screen and offers the occasional brief heads-up (e.g. explaining an error). Off by default; rate-limited; only escalates on meaningful, actionable changes. Needs Screen Recording + a configured provider.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
         }
