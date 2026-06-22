@@ -125,6 +125,39 @@ Removed scaffolding-ahead-of-need surfaced by the ponytail audit (~415 lines).
 - **OC-30 — Reusable agent-endpoint Settings component.** Extracted
   `AgentEndpointSettingsView` (endpoint + scheme validation + bearer token) from the
   OpenClaw section so OpenClaw and Hermes share one UI. (`SettingsView.swift`)
+- **OC-73 — SSE parser fails loudly (Codex follow-up).** `chatStreaming` now surfaces
+  streamed `error` frames as `apiError` and throws `invalidResponseFormat` when a stream
+  produces no recognizable content and never sends `[DONE]`, instead of reporting empty
+  "success" on an errored/non-OpenAI stream. (`OpenAICompatibleProvider.swift`)
+- **OC-74 — Model-aware capabilities (deferred).** Capabilities are currently provider-level;
+  making them resolve from the selected model (and gating capture on confirmed vision) is
+  tracked as a follow-up.
+
+### E5 — Hermes (Nous Research Hermes Agent) integration (epic OC-5) [headline]
+
+Route work to the user's own Nous Hermes Agent instead of a hosted LLM, closing the
+agent-mode gap vs the commercial HeyClicky using the user's own agent.
+
+- **OC-28 — `.hermes` provider.** A `.hermes` `APIProviderType` that reuses
+  `OpenAICompatibleProvider` against `<endpoint>/v1/chat/completions` with model `hermes-agent`
+  — same `image_url` vision + `choices[].delta.content` SSE path as OpenRouter/OpenClaw.
+  (`ProviderConfiguration.swift`, `ProviderManager.swift`)
+- **OC-32 — Pluggable deployment.** Hermes endpoint (default `http://localhost:8642`) in
+  UserDefaults + token in Keychain; blank endpoint falls back to localhost; remote endpoints
+  must use HTTPS (E1 ATS). Settings fields via the shared `AgentEndpointSettingsView`. Covers
+  local / self-hosted VPS / subscription. (`ProviderConfiguration.swift`, `ProviderManager.swift`, `SettingsView.swift`)
+- **OC-37 — Readiness Check.** A Settings diagnostic that probes the live instance and
+  reports the three integration risks: vision request accepted, `[POINT:]` tags preserved,
+  and whether the incoming system prompt is honored. (`SettingsView.swift`)
+- **OC-41 — Mode A (answer + point).** Hermes runs through the existing
+  voice→screenshot→stream→TTS→POINT pipeline unchanged (the full system prompt incl. POINT
+  instructions is sent), so it answers and points like the Claude path once selected.
+- **OC-49 — Settings UI + mode toggle + docs.** Hermes section with endpoint/token, a
+  computer-use mode toggle, the Readiness Check, and an in-UI note about action mode.
+- **OC-46 — Mode B (computer-use): scaffolded, actuation deferred.** The opt-in toggle +
+  `hermesActionModeEnabled` flag are wired, but performing on-screen actions requires the
+  Hands-On actuation layer (F1 / OC-6), which is a later wave — so action mode currently
+  falls back to answer+point and the UI says so. **OC-46 stays open, blocked on F1.**
 
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 

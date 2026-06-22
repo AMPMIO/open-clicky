@@ -11,12 +11,14 @@ enum APIProviderType: String, CaseIterable, Codable {
     case workerProxy
     case openRouter
     case openClaw
+    case hermes
 
     var displayName: String {
         switch self {
         case .workerProxy: return "Worker Proxy"
         case .openRouter: return "OpenRouter"
         case .openClaw: return "OpenClaw"
+        case .hermes: return "Hermes"
         }
     }
 
@@ -28,6 +30,7 @@ enum APIProviderType: String, CaseIterable, Codable {
         case .workerProxy: return "claude-sonnet-4-6"
         case .openRouter: return "anthropic/claude-sonnet-4-6"
         case .openClaw: return "anthropic/claude-sonnet-4-6"
+        case .hermes: return "hermes-agent"
         }
     }
 
@@ -42,6 +45,10 @@ enum APIProviderType: String, CaseIterable, Codable {
             return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: true)
         case .openClaw:
             return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: false)
+        case .hermes:
+            // Hermes is model-agnostic — vision + pointing depend on the model the
+            // user configured behind it, so don't promise reliable pointing.
+            return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: false)
         }
     }
 }
@@ -51,11 +58,14 @@ struct ProviderConfiguration {
 
     private static let openRouterKeyService = "com.clicky.openrouter-key"
     private static let openClawTokenService = "com.clicky.openclaw-token"
+    private static let hermesTokenService = "com.clicky.hermes-token"
 
     // MARK: - UserDefaults Keys
 
     private static let providerKey = "activeAPIProvider"
     private static let openClawEndpointKey = "openClawEndpoint"
+    private static let hermesEndpointKey = "hermesEndpoint"
+    private static let hermesActionModeKey = "hermesActionModeEnabled"
     private static let workerBaseURLKey = "workerBaseURL"
     /// Selected model is stored PER provider so switching backends never sends an
     /// incompatible model id (e.g. an OpenRouter slug to the Anthropic route).
@@ -65,6 +75,8 @@ struct ProviderConfiguration {
 
     static let defaultWorkerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
     static let defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+    /// Default Nous Hermes Agent API server bind address.
+    static let defaultHermesEndpoint = "http://localhost:8642"
 
     /// Single source of truth for the configured Worker base URL, readable
     /// without a ProviderConfiguration instance. TTS and transcription read this
@@ -108,6 +120,17 @@ struct ProviderConfiguration {
         didSet { UserDefaults.standard.set(openClawEndpoint, forKey: Self.openClawEndpointKey) }
     }
 
+    var hermesEndpoint: String {
+        didSet { UserDefaults.standard.set(hermesEndpoint, forKey: Self.hermesEndpointKey) }
+    }
+
+    /// When true, Hermes is allowed to perform on-screen actions (computer-use)
+    /// rather than only answering + pointing. The actuation layer itself ships
+    /// with Hands-On Mode (F1); this flag is the user's opt-in.
+    var hermesActionModeEnabled: Bool {
+        didSet { UserDefaults.standard.set(hermesActionModeEnabled, forKey: Self.hermesActionModeKey) }
+    }
+
     // MARK: - Init (loads from UserDefaults)
 
     init() {
@@ -118,6 +141,8 @@ struct ProviderConfiguration {
         self.activeProvider = APIProviderType(rawValue: providerRaw) ?? .workerProxy
         self.workerBaseURL = defaults.string(forKey: Self.workerBaseURLKey) ?? Self.defaultWorkerBaseURL
         self.openClawEndpoint = defaults.string(forKey: Self.openClawEndpointKey) ?? ""
+        self.hermesEndpoint = defaults.string(forKey: Self.hermesEndpointKey) ?? ""
+        self.hermesActionModeEnabled = defaults.bool(forKey: Self.hermesActionModeKey)
     }
 
     // MARK: - Per-provider model storage
@@ -151,6 +176,17 @@ struct ProviderConfiguration {
                 _ = KeychainManager.save(key: token, service: Self.openClawTokenService)
             } else {
                 KeychainManager.delete(service: Self.openClawTokenService)
+            }
+        }
+    }
+
+    var hermesToken: String? {
+        get { KeychainManager.retrieve(service: Self.hermesTokenService) }
+        set {
+            if let token = newValue, !token.isEmpty {
+                _ = KeychainManager.save(key: token, service: Self.hermesTokenService)
+            } else {
+                KeychainManager.delete(service: Self.hermesTokenService)
             }
         }
     }

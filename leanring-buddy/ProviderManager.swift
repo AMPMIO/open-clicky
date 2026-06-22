@@ -93,6 +93,26 @@ class ProviderManager: ObservableObject {
                 baseURL: url,
                 apiKey: token
             )
+
+        case .hermes:
+            let token = config.hermesToken ?? ""
+            let endpoint = config.hermesEndpoint.isEmpty
+                ? ProviderConfiguration.defaultHermesEndpoint
+                : config.hermesEndpoint
+            // Nous Hermes Agent exposes an OpenAI-compatible chat-completions
+            // server (default http://localhost:8642), so it reuses OpenAICompatibleProvider
+            // verbatim — same image_url vision parts and choices[].delta.content SSE.
+            guard let url = sanitizedURL(endpoint, path: "/v1/chat/completions") else {
+                return UnconfiguredProvider(
+                    provider: "Hermes",
+                    reason: "The Hermes endpoint is not a valid URL."
+                )
+            }
+            return OpenAICompatibleProvider(
+                displayName: "Hermes",
+                baseURL: url,
+                apiKey: token
+            )
         }
     }
 

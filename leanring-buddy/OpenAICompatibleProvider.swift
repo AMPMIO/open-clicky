@@ -67,27 +67,48 @@ class OpenAICompatibleProvider: LLMProvider {
         }
 
         var accumulatedText = ""
+        var sawAnyContentChunk = false
+        var sawDone = false
 
         for try await line in byteStream.lines {
             // Accept both "data: {...}" and "data:{...}"; skip SSE comments (":..."),
             // keep-alives, and blank lines.
             guard line.hasPrefix("data:") else { continue }
             let payloadString = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard payloadString != "[DONE]" else { break }
+            guard payloadString != "[DONE]" else { sawDone = true; break }
             guard !payloadString.isEmpty else { continue }
 
             guard let jsonData = payloadString.data(using: .utf8),
-                  let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                  let choices = payload["choices"] as? [[String: Any]],
+                  let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                continue
+            }
+
+            // Surface a streamed error event instead of silently skipping it (some
+            // backends return HTTP 200 then an {"error": ...} SSE frame).
+            if let errorObject = payload["error"] as? [String: Any] {
+                let message = (errorObject["message"] as? String) ?? "streaming error"
+                throw ProviderError.apiError(statusCode: httpResponse.statusCode, message: message)
+            }
+
+            guard let choices = payload["choices"] as? [[String: Any]],
                   let firstChoice = choices.first,
                   let delta = firstChoice["delta"] as? [String: Any],
                   let content = delta["content"] as? String else {
                 continue
             }
 
+            sawAnyContentChunk = true
             accumulatedText += content
             let currentText = accumulatedText
             await onTextChunk(currentText)
+        }
+
+        // If the stream produced no recognizable OpenAI content and never sent
+        // [DONE], treat it as a format mismatch (e.g. a non-OpenAI endpoint, or a
+        // backend that ignored `stream` and returned a plain JSON body) rather than
+        // reporting empty success.
+        guard sawAnyContentChunk || sawDone else {
+            throw ProviderError.invalidResponseFormat
         }
 
         let duration = Date().timeIntervalSince(startTime)

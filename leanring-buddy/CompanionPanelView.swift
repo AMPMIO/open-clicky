@@ -679,6 +679,12 @@ struct CompanionPanelView: View {
                 (id: "anthropic/claude-sonnet-4-6", label: "Sonnet"),
                 (id: "openai/gpt-4o", label: "GPT-4o"),
             ]
+        case .hermes:
+            // Hermes picks its own underlying model; "hermes-agent" is the
+            // conventional id its OpenAI-compatible server accepts.
+            return [
+                (id: "hermes-agent", label: "Hermes"),
+            ]
         }
     }
 

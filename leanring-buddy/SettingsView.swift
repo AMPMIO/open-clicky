@@ -18,6 +18,12 @@ struct SettingsView: View {
     @State private var isTestingConnection: Bool = false
     @State private var openClawEndpointError: String?
     @State private var workerURLError: String?
+    @State private var hermesEndpointInput: String = ""
+    @State private var hermesTokenInput: String = ""
+    @State private var hermesEndpointError: String?
+    @State private var hermesActionMode: Bool = false
+    @State private var hermesReadinessResult: String?
+    @State private var isCheckingHermes: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -40,6 +46,8 @@ struct SettingsView: View {
                 openRouterSection
             case .openClaw:
                 openClawSection
+            case .hermes:
+                hermesSection
             case .workerProxy:
                 workerProxySection
             }
@@ -158,6 +166,110 @@ struct SettingsView: View {
         )
     }
 
+    // MARK: - Hermes Section
+
+    private var hermesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AgentEndpointSettingsView(
+                endpointLabel: "Hermes Endpoint",
+                endpointPlaceholder: "http://localhost:8642",
+                endpoint: $hermesEndpointInput,
+                token: $hermesTokenInput,
+                endpointError: hermesEndpointError,
+                onEndpointChange: { newValue in
+                    hermesEndpointError = Self.endpointValidationError(newValue)
+                    providerManager.configuration.hermesEndpoint = newValue
+                    providerManager.updateProvider()
+                },
+                onTokenChange: { newValue in
+                    providerManager.configuration.hermesToken = newValue
+                    providerManager.updateProvider()
+                }
+            )
+
+            // Mode toggle (answer+point vs computer-use)
+            Toggle(isOn: $hermesActionMode) {
+                Text("Allow on-screen actions (computer-use)")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .onChange(of: hermesActionMode) { newValue in
+                providerManager.configuration.hermesActionModeEnabled = newValue
+            }
+
+            Text("Action mode needs the Hands-On actuation layer (coming soon). Until then, Hermes answers and points.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            // Readiness check: probe vision passthrough, POINT-tag preservation,
+            // and whether the incoming system prompt is honored.
+            Button(action: { runHermesReadinessCheck() }) {
+                HStack(spacing: 6) {
+                    if isCheckingHermes {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "checkmark.seal").font(.system(size: 10))
+                    }
+                    Text("Run Readiness Check").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(DS.Colors.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(DS.Colors.surface3))
+            }
+            .buttonStyle(.plain)
+            .disabled(isCheckingHermes)
+
+            if let hermesReadinessResult {
+                Text(hermesReadinessResult)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Probes the configured Hermes instance for the three integration risks that
+    /// determine whether Clicky's pointing works: vision passthrough, raw-text +
+    /// [POINT:] tag preservation, and whether the incoming system prompt is honored.
+    private func runHermesReadinessCheck() {
+        isCheckingHermes = true
+        hermesReadinessResult = nil
+        Task {
+            // 1x1 transparent PNG so the request exercises the image_url vision path.
+            let onePixelPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==") ?? Data()
+            let probeSystemPrompt = "You are a diagnostic. Reply with exactly this and nothing else: READY [POINT:5,5:probe]"
+            do {
+                let (text, _) = try await providerManager.currentProvider.chatStreaming(
+                    images: [(data: onePixelPNG, label: "test image (image dimensions: 1x1 pixels)")],
+                    systemPrompt: probeSystemPrompt,
+                    conversationHistory: [],
+                    userPrompt: "run the diagnostic",
+                    model: providerManager.configuration.selectedModelID,
+                    onTextChunk: { _ in }
+                )
+                let respondedAtAll = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let honorsSystemPrompt = text.localizedCaseInsensitiveContains("READY")
+                let preservesPointTags = text.contains("[POINT:")
+                await MainActor.run {
+                    var lines: [String] = []
+                    lines.append(respondedAtAll ? "✓ responded (vision request accepted)" : "✗ empty response")
+                    lines.append(honorsSystemPrompt ? "✓ honors the system prompt" : "✗ system prompt ignored or reformatted")
+                    lines.append(preservesPointTags ? "✓ preserves [POINT:] tags (pointing should work)" : "✗ no [POINT:] tag — pointing may not work")
+                    hermesReadinessResult = lines.joined(separator: "\n")
+                    isCheckingHermes = false
+                }
+            } catch {
+                await MainActor.run {
+                    hermesReadinessResult = "✗ \(error.localizedDescription.prefix(120))"
+                    isCheckingHermes = false
+                }
+            }
+        }
+    }
+
     // MARK: - Worker Proxy Section
 
     private var workerProxySection: some View {
@@ -238,8 +350,12 @@ struct SettingsView: View {
         openClawTokenInput = providerManager.configuration.openClawToken ?? ""
         openClawEndpointInput = providerManager.configuration.openClawEndpoint
         workerURLInput = providerManager.configuration.workerBaseURL
+        hermesEndpointInput = providerManager.configuration.hermesEndpoint
+        hermesTokenInput = providerManager.configuration.hermesToken ?? ""
+        hermesActionMode = providerManager.configuration.hermesActionModeEnabled
         openClawEndpointError = Self.endpointValidationError(openClawEndpointInput)
         workerURLError = Self.endpointValidationError(workerURLInput)
+        hermesEndpointError = Self.endpointValidationError(hermesEndpointInput)
     }
 
     /// Returns a user-facing warning if `endpoint` would be blocked by App
