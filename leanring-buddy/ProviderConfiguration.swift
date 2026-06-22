@@ -59,6 +59,19 @@ struct ProviderConfiguration {
         UserDefaults.standard.string(forKey: workerBaseURLKey) ?? defaultWorkerBaseURL
     }
 
+    /// Worker base URL with any trailing slash removed so route paths append
+    /// cleanly (avoids `host//tts`, which the Worker route switch won't match).
+    static var normalizedWorkerBaseURL: String {
+        let base = workerBaseURLFromDefaults.trimmingCharacters(in: .whitespacesAndNewlines)
+        return base.hasSuffix("/") ? String(base.dropLast()) : base
+    }
+
+    /// Full URL string for a Worker route (e.g. "/tts", "/transcribe-token").
+    /// Single builder shared by chat, TTS, and transcription.
+    static func workerRouteURLString(_ path: String) -> String {
+        normalizedWorkerBaseURL + path
+    }
+
     // MARK: - Properties
 
     var activeProvider: APIProviderType {
@@ -102,23 +115,6 @@ struct ProviderConfiguration {
 
     private static func storeModelID(_ modelID: String, for provider: APIProviderType) {
         UserDefaults.standard.set(modelID, forKey: selectedModelKeyPrefix + provider.rawValue)
-    }
-
-    // MARK: - Configuration state
-
-    /// Whether the active provider has everything it needs to make a request.
-    /// Used to avoid capturing the user's screens and then firing a
-    /// guaranteed-to-fail call (e.g. OpenRouter with no key, Worker with the
-    /// placeholder URL still in place).
-    var isActiveProviderConfigured: Bool {
-        switch activeProvider {
-        case .workerProxy:
-            return !workerBaseURL.isEmpty && workerBaseURL != Self.defaultWorkerBaseURL
-        case .openRouter:
-            return !(openRouterAPIKey ?? "").isEmpty
-        case .openClaw:
-            return !openClawEndpoint.isEmpty
-        }
     }
 
     // MARK: - Keychain Accessors

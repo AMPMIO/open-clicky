@@ -562,7 +562,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            // If the engine fails to start after the session/tap were installed,
+            // tear them down so we don't leak a retained transcription session
+            // (and its websocket) until a later retry.
+            inputNode.removeTap(onBus: 0)
+            sessionForAudioTap.cancel()
+            if activeTranscriptionSession === sessionForAudioTap {
+                activeTranscriptionSession = nil
+            }
+            throw error
+        }
     }
 
     private func handleRecognitionError(_ error: Error) {

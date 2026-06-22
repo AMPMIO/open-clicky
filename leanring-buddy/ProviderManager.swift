@@ -22,6 +22,15 @@ class ProviderManager: ObservableObject {
         currentProvider = Self.buildProvider(from: configuration)
     }
 
+    /// True when the active provider is fully configured — i.e. the factory built
+    /// a real provider rather than the `UnconfiguredProvider` stand-in. Derived
+    /// from the same construction path used for requests, so readiness can't drift
+    /// from what `buildProvider` actually produces (blank OpenClaw → localhost is
+    /// ready; a malformed / remote-http endpoint is not).
+    var isCurrentProviderReady: Bool {
+        !(currentProvider is UnconfiguredProvider)
+    }
+
     func setActiveProvider(_ provider: APIProviderType) {
         configuration.activeProvider = provider
         updateProvider()

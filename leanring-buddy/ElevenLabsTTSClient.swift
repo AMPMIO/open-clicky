@@ -12,7 +12,7 @@ import Foundation
 
 @MainActor
 final class ElevenLabsTTSClient {
-    private let proxyURL: URL
+    private var proxyURL: URL
     private let session: URLSession
 
     /// The audio player for the current TTS playback. Kept alive so the
@@ -66,6 +66,14 @@ final class ElevenLabsTTSClient {
         self.audioPlayer = player
         player.play()
         print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+    }
+
+    /// Updates the proxy endpoint so playback isn't pinned to a stale/placeholder
+    /// URL when the Worker URL changes in Settings. Ignores invalid strings.
+    func updateProxyURL(_ urlString: String) {
+        if let url = URL(string: urlString) {
+            self.proxyURL = url
+        }
     }
 
     /// Whether TTS audio is currently playing back.

@@ -77,6 +77,25 @@ Removed scaffolding-ahead-of-need surfaced by the ponytail audit (~415 lines).
   OpenAICompatibleProvider, KeychainManager, SettingsView, TLSWarmer) and drop the deleted
   `OpenAIAPI.swift`.
 
+### E1 hardening — Codex adversarial review follow-ups (OC-69, OC-70, OC-71)
+
+- **OC-69 — Aligned provider readiness with the factory.** Replaced
+  `ProviderConfiguration.isActiveProviderConfigured` with `ProviderManager.isCurrentProviderReady`
+  (`!(currentProvider is UnconfiguredProvider)`), so readiness can't drift from what
+  `buildProvider` produces: blank OpenClaw (→ localhost default) is allowed, while a
+  malformed / remote-http endpoint blocks screen capture. (`ProviderManager.swift`,
+  `ProviderConfiguration.swift`, `CompanionManager.swift`)
+- **OC-70 — Centralized + normalized Worker route URLs.** Added
+  `ProviderConfiguration.workerRouteURLString(_:)` (trailing-slash safe), used by TTS and
+  transcription; `ElevenLabsTTSClient.updateProxyURL` refreshes the endpoint before each
+  speak so it tracks Settings changes without a restart (no more stale/placeholder URL or
+  `//tts`). (`ProviderConfiguration.swift`, `ElevenLabsTTSClient.swift`, `CompanionManager.swift`,
+  `AssemblyAIStreamingTranscriptionProvider.swift`)
+- **OC-71 — Audio-tap failure cleanup.** If `AVAudioEngine.start()` throws after the tap +
+  session are installed, the tap is removed and the just-opened session cancelled before
+  rethrowing, so a failed start can't leak a retained transcription session/websocket.
+  (`BuddyDictationManager.swift`)
+
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 
 ### Added

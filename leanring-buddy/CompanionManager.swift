@@ -74,7 +74,7 @@ final class CompanionManager: ObservableObject {
     /// TTS proxy reads the configured Worker base URL (single source of truth in
     /// ProviderConfiguration) so the Settings "Worker URL" field reaches TTS too.
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(ProviderConfiguration.workerBaseURLFromDefaults)/tts")
+        return ElevenLabsTTSClient(proxyURL: ProviderConfiguration.workerRouteURLString("/tts"))
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -591,7 +591,9 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = Task {
             // Don't capture the user's screens (or fire a request) if the active
             // provider can't actually answer — surface a clear setup message instead.
-            guard providerManager.configuration.isActiveProviderConfigured else {
+            // Readiness is derived from the provider factory (see ProviderManager),
+            // so it matches exactly what would be used for the request.
+            guard providerManager.isCurrentProviderReady else {
                 speakProviderNotConfigured()
                 return
             }
@@ -710,6 +712,8 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
+                        // Refresh the TTS endpoint in case the Worker URL changed in Settings.
+                        elevenLabsTTSClient.updateProxyURL(ProviderConfiguration.workerRouteURLString("/tts"))
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
@@ -990,7 +994,7 @@ final class CompanionManager: ObservableObject {
         guard voiceState == .idle || voiceState == .responding else { return }
         // Skip the demo silently if the provider isn't set up — don't pop an
         // error over the onboarding video.
-        guard providerManager.configuration.isActiveProviderConfigured else {
+        guard providerManager.isCurrentProviderReady else {
             print("🎯 Onboarding demo skipped: active provider not configured")
             return
         }

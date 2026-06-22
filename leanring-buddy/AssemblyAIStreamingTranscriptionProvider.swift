@@ -22,7 +22,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     /// Reads the configured Worker base URL (single source of truth in
     /// ProviderConfiguration) so it tracks the Settings "Worker URL" field.
     private static var tokenProxyURL: String {
-        "\(ProviderConfiguration.workerBaseURLFromDefaults)/transcribe-token"
+        ProviderConfiguration.workerRouteURLString("/transcribe-token")
     }
 
     let displayName = "AssemblyAI"
