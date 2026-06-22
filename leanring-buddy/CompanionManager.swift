@@ -577,6 +577,36 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    /// Returns a short, app-specific addendum to the system prompt based on the
+    /// frontmost application, so guidance is tailored to the app the user is in
+    /// (Figma, DaVinci, FL Studio, After Effects, Xcode, code editors). Returns an
+    /// empty string for unrecognized apps so the base prompt is used unchanged.
+    private static func activeAppGuidanceAddendum() -> String {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return "" }
+        let bundleID = (app.bundleIdentifier ?? "").lowercased()
+        let name = (app.localizedName ?? "").lowercased()
+
+        let hint: String?
+        if bundleID.contains("figma") || name.contains("figma") {
+            hint = "the user is in figma — think in frames, components, auto layout, constraints, and the design/prototype panels."
+        } else if bundleID.contains("blackmagic") || name.contains("davinci") {
+            hint = "the user is in davinci resolve — think in the cut/edit/color/fairlight/deliver pages, nodes, and color wheels."
+        } else if bundleID.contains("image-line") || name.contains("fl studio") {
+            hint = "the user is in fl studio — think in the channel rack, piano roll, playlist, mixer, and patterns."
+        } else if name.contains("after effects") {
+            hint = "the user is in after effects — think in compositions, layers, keyframes, the timeline, and effects."
+        } else if bundleID == "com.apple.dt.xcode" {
+            hint = "the user is in xcode — think in the navigator, editor, run/stop controls, breakpoints, and the source control menu."
+        } else if bundleID.contains("vscode") || name.contains("visual studio code") || name.contains("cursor") {
+            hint = "the user is in a code editor — think in files, the integrated terminal, the command palette, and the source control panel."
+        } else {
+            hint = nil
+        }
+
+        guard let hint else { return "" }
+        return "\n\nactive app context: \(hint) reference concrete on-screen elements when you point."
+    }
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -622,7 +652,7 @@ final class CompanionManager: ObservableObject {
 
                 let (fullResponseText, _) = try await providerManager.currentProvider.chatStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: Self.companionVoiceResponseSystemPrompt + Self.activeAppGuidanceAddendum(),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     model: selectedModel,
@@ -919,7 +949,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private func startOnboardingPromptStream() {
-        let message = "press control + option and introduce yourself"
+        let message = "press control + option and ask me about what's on your screen"
         onboardingPromptText = ""
         showOnboardingPrompt = true
         onboardingPromptOpacity = 0.0

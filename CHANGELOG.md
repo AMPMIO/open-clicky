@@ -96,6 +96,17 @@ Removed scaffolding-ahead-of-need surfaced by the ponytail audit (~415 lines).
   rethrowing, so a failed start can't leak a retained transcription session/websocket.
   (`BuddyDictationManager.swift`)
 
+### E3 — Close the HeyClicky gap (epic OC-3)
+
+- **OC-18 — App-specific tutoring.** The live system prompt now appends an
+  `activeAppGuidanceAddendum()` derived from the frontmost app (Figma, DaVinci, FL Studio,
+  After Effects, Xcode, code editors), so guidance is tailored to what the user is doing.
+  (`CompanionManager.swift`)
+- **OC-20 — Onboarding copy refresh.** The first-run prompt now nudges an app/screen
+  question ("ask me about what's on your screen") instead of a generic "introduce yourself."
+  (`CompanionManager.swift`)
+- **OC-24 — Pulsing halo** on the pointing cursor (shipped in commit 377e34d).
+
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 
 ### Added
