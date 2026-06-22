@@ -122,6 +122,25 @@ final class CompanionManager: ObservableObject {
         providerManager.configuration.selectedModelID = model
     }
 
+    // MARK: - Hands-On Mode (Accessibility actuation)
+
+    /// User opt-in for Hands-On Mode. When enabled, Clicky may PROPOSE a single
+    /// click ([ACT:...]) and, only after explicit spoken confirmation, perform it
+    /// via the Accessibility API. Off by default; this is the kill switch.
+    @Published var isHandsOnModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isHandsOnModeEnabled")
+
+    func setHandsOnModeEnabled(_ enabled: Bool) {
+        isHandsOnModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isHandsOnModeEnabled")
+    }
+
+    /// A proposed action awaiting the user's spoken confirmation.
+    private struct PendingHandsOnAction {
+        let quartzPoint: CGPoint
+        let label: String
+    }
+    private var pendingHandsOnAction: PendingHandsOnAction?
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -630,6 +649,14 @@ final class CompanionManager: ObservableObject {
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+        // If a Hands-On action is awaiting confirmation, this utterance answers it
+        // (confirm / cancel / or something else) rather than starting a new request.
+        if let pending = pendingHandsOnAction {
+            pendingHandsOnAction = nil
+            resolveHandsOnConfirmation(transcript: transcript, pending: pending)
+            return
+        }
+
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
@@ -667,7 +694,9 @@ final class CompanionManager: ObservableObject {
 
                 let (fullResponseText, _) = try await providerManager.currentProvider.chatStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt + Self.activeAppGuidanceAddendum(),
+                    systemPrompt: Self.companionVoiceResponseSystemPrompt
+                        + Self.activeAppGuidanceAddendum()
+                        + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : ""),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     model: selectedModel,
@@ -680,7 +709,7 @@ final class CompanionManager: ObservableObject {
 
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-                let spokenText = parseResult.spokenText
+                var spokenText = parseResult.spokenText
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -735,6 +764,41 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                }
+
+                // Hands-On Mode: if enabled and the model proposed a click action,
+                // point at the target and ask for spoken confirmation — never act
+                // immediately. (When Hands-On is off this block is fully skipped, so
+                // the pointing behavior above is unchanged.)
+                if isHandsOnModeEnabled {
+                    let actionParse = Self.parseActionTag(from: spokenText)
+                    spokenText = actionParse.spokenText
+                    if let actionCoordinate = actionParse.coordinate {
+                        let actionScreenCapture: CompanionScreenCapture? = {
+                            if let screenNumber = actionParse.screenNumber,
+                               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                                return screenCaptures[screenNumber - 1]
+                            }
+                            return screenCaptures.first(where: { $0.isCursorScreen })
+                        }()
+                        let label = actionParse.label ?? "that"
+                        if !hasAccessibilityPermission {
+                            spokenText += spokenText.isEmpty ? "" : " "
+                            spokenText += "i'd need accessibility access in settings to actually click that."
+                        } else if let actionScreenCapture {
+                            voiceState = .idle
+                            let appKitLocation = Self.appKitGlobalLocation(forScreenshotCoordinate: actionCoordinate, in: actionScreenCapture)
+                            detectedElementScreenLocation = appKitLocation
+                            detectedElementDisplayFrame = actionScreenCapture.displayFrame
+                            pendingHandsOnAction = PendingHandsOnAction(
+                                quartzPoint: AccessibilityActuator.quartzPoint(fromAppKitGlobal: appKitLocation),
+                                label: label
+                            )
+                            let ask = "i'll click \(label). say go to confirm, or cancel."
+                            spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
+                            print("🖐️ Hands-On: pending click on \"\(label)\"")
+                        }
+                    }
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -840,6 +904,53 @@ final class CompanionManager: ObservableObject {
         scheduleTransientHideIfNeeded()
     }
 
+    /// Speaks a short confirmation/status line via macOS system TTS.
+    private func speakSystemMessage(_ text: String) {
+        let synthesizer = NSSpeechSynthesizer()
+        synthesizer.startSpeaking(text)
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+    }
+
+    // MARK: - Hands-On Confirmation
+
+    /// Hands-On Mode appends this to the system prompt so the model knows it may
+    /// propose a single, confirmed click. Only included when the user opted in.
+    private static let handsOnModeInstructions = """
+
+
+    hands-on mode is ON. if the user clearly asks you to DO something clickable on screen (like "click export", "press that button", "just do it for me"), you may propose ONE click. append a tag at the very end, AFTER your spoken text: [ACT:press:x,y:label] using the same screenshot pixel coordinate space as the pointing tag (add :screenN if it's on another screen). only propose an action when the user clearly wants you to act, and only for a single, clearly clickable element. NEVER propose actions for destructive or irreversible things (delete, send, pay, post, quit, overwrite) — for those, just point and explain instead. the user always confirms by voice before anything happens. don't use both [POINT] and [ACT] in one reply — [ACT] already points at the element.
+    """
+
+    /// Handles the user's spoken response to a pending Hands-On action: perform it
+    /// on confirmation, drop it on cancel, otherwise treat the utterance as a new
+    /// request. The action only executes here, after explicit confirmation.
+    private func resolveHandsOnConfirmation(transcript: String, pending: PendingHandsOnAction) {
+        clearDetectedElementLocation()
+        let lower = transcript.lowercased()
+        let negations = ["cancel", "stop", "don't", "do not", "nope", "no thanks", "nevermind", "never mind", "leave it"]
+        let affirmations = ["go", "yes", "yeah", "yep", "do it", "confirm", "click", "sure", "okay", "ok", "please"]
+
+        if negations.contains(where: { lower.contains($0) }) {
+            speakSystemMessage("okay, cancelled.")
+            return
+        }
+        if affirmations.contains(where: { lower.contains($0) }) {
+            ClickyAnalytics.trackElementPointed(elementLabel: "hands-on:" + pending.label)
+            do {
+                try AccessibilityActuator.press(atQuartzPoint: pending.quartzPoint)
+                speakSystemMessage("done.")
+            } catch {
+                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                print("🖐️ Hands-On action failed: \(error)")
+                speakSystemMessage("i couldn't click that.")
+            }
+            return
+        }
+        // Neither a confirmation nor a cancellation — treat it as a fresh request.
+        sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+    }
+
     // MARK: - Point Tag Parsing
 
     /// Result of parsing a [POINT:...] tag from Claude's response.
@@ -895,6 +1006,61 @@ final class CompanionManager: ObservableObject {
             elementLabel: elementLabel,
             screenNumber: screenNumber
         )
+    }
+
+    // MARK: - Hands-On Action Parsing
+
+    /// Result of parsing an [ACT:press:...] tag from the response.
+    struct ActionParseResult {
+        let spokenText: String
+        let coordinate: CGPoint?
+        let label: String?
+        let screenNumber: Int?
+    }
+
+    /// Parses `[ACT:press:x,y:label]` or `[ACT:press:x,y:label:screenN]` from the
+    /// end of the response (mirrors parsePointingCoordinates). Returns the text
+    /// with the tag stripped plus the screenshot-pixel coordinate.
+    static func parseActionTag(from responseText: String) -> ActionParseResult {
+        let pattern = #"\[ACT:press:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              let tagRange = Range(match.range, in: responseText) else {
+            return ActionParseResult(spokenText: responseText, coordinate: nil, label: nil, screenNumber: nil)
+        }
+        let spokenText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let xRange = Range(match.range(at: 1), in: responseText),
+              let yRange = Range(match.range(at: 2), in: responseText),
+              let x = Double(responseText[xRange]),
+              let y = Double(responseText[yRange]) else {
+            return ActionParseResult(spokenText: spokenText, coordinate: nil, label: nil, screenNumber: nil)
+        }
+        var label: String? = nil
+        if let labelRange = Range(match.range(at: 3), in: responseText) {
+            label = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
+        }
+        var screenNumber: Int? = nil
+        if let screenRange = Range(match.range(at: 4), in: responseText) {
+            screenNumber = Int(responseText[screenRange])
+        }
+        return ActionParseResult(spokenText: spokenText, coordinate: CGPoint(x: x, y: y), label: label, screenNumber: screenNumber)
+    }
+
+    /// Converts a screenshot-pixel coordinate within a capture to an AppKit global
+    /// location (bottom-left origin) — the same space the cursor overlay uses.
+    /// Shared by Hands-On actuation (and available for future spatial features).
+    static func appKitGlobalLocation(forScreenshotCoordinate coordinate: CGPoint, in capture: CompanionScreenCapture) -> CGPoint {
+        let screenshotWidth = CGFloat(capture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(capture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(capture.displayWidthInPoints)
+        let displayHeight = CGFloat(capture.displayHeightInPoints)
+        let displayFrame = capture.displayFrame
+        let clampedX = max(0, min(coordinate.x, screenshotWidth))
+        let clampedY = max(0, min(coordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+        return CGPoint(x: displayLocalX + displayFrame.origin.x, y: appKitY + displayFrame.origin.y)
     }
 
     // MARK: - Onboarding Video

@@ -771,7 +771,7 @@ struct CompanionPanelView: View {
             .buttonStyle(.plain)
             .pointerCursor()
             .popover(isPresented: $showSettings) {
-                SettingsView(providerManager: companionManager.providerManager)
+                SettingsView(providerManager: companionManager.providerManager, companionManager: companionManager)
             }
 
             if companionManager.hasCompletedOnboarding {

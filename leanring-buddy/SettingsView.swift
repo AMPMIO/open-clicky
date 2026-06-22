@@ -10,6 +10,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var providerManager: ProviderManager
+    @ObservedObject var companionManager: CompanionManager
     @State private var openRouterKeyInput: String = ""
     @State private var openClawTokenInput: String = ""
     @State private var openClawEndpointInput: String = ""
@@ -54,6 +55,10 @@ struct SettingsView: View {
 
             // Connection test
             connectionTestSection
+
+            Divider().background(DS.Colors.borderSubtle)
+
+            handsOnSection
 
             Spacer()
         }
@@ -307,6 +312,29 @@ struct SettingsView: View {
             Text("Keys are stored on the Worker, not locally.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+    }
+
+    // MARK: - Hands-On Mode
+
+    private var handsOnSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { companionManager.isHandsOnModeEnabled },
+                set: { companionManager.setHandsOnModeEnabled($0) }
+            )) {
+                Text("Hands-On Mode (click for me)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            Text(companionManager.hasAccessibilityPermission
+                 ? "After you confirm by voice, Clicky can click an element for you. It never acts on destructive things."
+                 : "Needs Accessibility permission to click on your behalf.")
+                .font(.system(size: 10))
+                .foregroundColor(companionManager.hasAccessibilityPermission ? DS.Colors.textTertiary : DS.Colors.warningText)
         }
     }
 

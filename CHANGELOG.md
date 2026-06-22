@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] — Feature wave (F1–F7, Linear epics OC-6…OC-12)
+
+> These are net-new features that lean on Accessibility actuation, system audio, OAuth, and
+> terminal automation — authored + statically reviewed (CodeRabbit + Codex) but pending an
+> on-device Xcode build/run (no terminal `xcodebuild`). Treat as first implementations.
+
+### F1 — Hands-On Mode (epic OC-6)
+
+Upgrades the companion from pointing-only to optionally *doing* a step, gated by explicit voice confirmation.
+
+- **OC-33 — Accessibility actuation layer.** New `AccessibilityActuator` resolves a global
+  screen point to an `AXUIElement` (`AXUIElementCopyElementAtPosition`) and performs
+  `kAXPressAction` / `AXValue` set, with an AppKit→Quartz (bottom-left→top-left) coordinate
+  conversion and an `AXIsProcessTrusted` permission gate. (`AccessibilityActuator.swift` new)
+- **OC-38 — `[ACT:press:x,y:label[:screenN]]` protocol + parser.** `CompanionManager.parseActionTag`
+  mirrors the POINT parser; a shared `appKitGlobalLocation(forScreenshotCoordinate:in:)` helper
+  maps screenshot pixels → AppKit global for both pointing and actuation. (`CompanionManager.swift`)
+- **OC-40 — Confirm-before-act + cancel.** When the model proposes an action, Clicky points at
+  the target and asks for confirmation; the next utterance executes it (affirmation), cancels it
+  (negation), or is treated as a fresh request. The press only runs after explicit confirmation.
+  (`CompanionManager.swift`)
+- **OC-44 — Guardrails.** Opt-in toggle (`isHandsOnModeEnabled`, off by default — the kill
+  switch) surfaced in Settings; requires Accessibility permission; the system prompt forbids
+  proposing destructive/irreversible actions (delete/send/pay/quit). (`CompanionManager.swift`,
+  `SettingsView.swift`, `CompanionPanelView.swift`)
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)
