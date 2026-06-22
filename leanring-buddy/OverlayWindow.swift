@@ -170,6 +170,12 @@ struct BlueCursorView: View {
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
+    /// Drives the pulsing halo that radiates out from the triangle while it's
+    /// pointing at a target. Toggled to true (with a repeating animation) when
+    /// pointing begins and reset to false when pointing ends, so the halo only
+    /// animates while .pointingAtTarget is active.
+    @State private var haloPulse: Bool = false
+
     // MARK: - Onboarding Video Layout
 
     private let onboardingVideoPlayerWidth: CGFloat = 330
@@ -297,6 +303,21 @@ struct BlueCursorView: View {
                     .onPreferenceChange(NavigationBubbleSizePreferenceKey.self) { newSize in
                         navigationBubbleSize = newSize
                     }
+            }
+
+            // Pulsing halo — radiates out from the triangle while it's pointing at
+            // a target, drawing the eye to the exact spot to click. Rendered before
+            // the triangle so it sits behind it. The repeating animation (driven by
+            // haloPulse) grows the circle from 1.0x to 1.8x while fading it out, so
+            // each pulse reads as a ripple expanding from the cursor.
+            if buddyNavigationMode == .pointingAtTarget && buddyIsVisibleOnThisScreen {
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue)
+                    .frame(width: 24, height: 24)
+                    .scaleEffect(haloPulse ? 1.8 : 1.0)
+                    .opacity(haloPulse ? 0.0 : 0.5)
+                    .position(cursorPosition)
+                    .allowsHitTesting(false)
             }
 
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
@@ -582,6 +603,14 @@ struct BlueCursorView: View {
         // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
 
+        // Start the pulsing halo. Reset to the collapsed state first, then kick
+        // off a repeating animation that breathes the ring out and back
+        // (autoreverses) so it keeps pulsing instead of sticking expanded.
+        haloPulse = false
+        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+            haloPulse = true
+        }
+
         // Reset navigation bubble state — start small for the scale-bounce entrance
         navigationBubbleText = ""
         navigationBubbleOpacity = 1.0
@@ -646,6 +675,9 @@ struct BlueCursorView: View {
 
         cursorPositionWhenNavigationStarted = cursorInSwiftUI
 
+        // Stop the pointing halo now that we're leaving .pointingAtTarget.
+        haloPulse = false
+
         buddyNavigationMode = .navigatingToTarget
         isReturningToCursor = true
 
@@ -676,6 +708,7 @@ struct BlueCursorView: View {
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
+        haloPulse = false
         companionManager.clearDetectedElementLocation()
     }
 
