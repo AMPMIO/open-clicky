@@ -141,6 +141,23 @@ final class CompanionManager: ObservableObject {
     }
     private var pendingHandsOnAction: PendingHandsOnAction?
 
+    // MARK: - Terminal Agent Bridge
+
+    /// User opt-in for dispatching prompts to a running terminal agent session
+    /// (e.g. Claude Code). Off by default; gated by voice confirmation.
+    @Published var isTerminalBridgeEnabled: Bool = UserDefaults.standard.bool(forKey: "isTerminalBridgeEnabled")
+
+    func setTerminalBridgeEnabled(_ enabled: Bool) {
+        isTerminalBridgeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isTerminalBridgeEnabled")
+    }
+
+    private struct PendingTerminalDispatch {
+        let prompt: String
+        let terminal: TerminalApp
+    }
+    private var pendingTerminalDispatch: PendingTerminalDispatch?
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -656,6 +673,11 @@ final class CompanionManager: ObservableObject {
             resolveHandsOnConfirmation(transcript: transcript, pending: pending)
             return
         }
+        if let pending = pendingTerminalDispatch {
+            pendingTerminalDispatch = nil
+            resolveTerminalConfirmation(transcript: transcript, pending: pending)
+            return
+        }
 
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
@@ -696,7 +718,8 @@ final class CompanionManager: ObservableObject {
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt
                         + Self.activeAppGuidanceAddendum()
-                        + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : ""),
+                        + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : "")
+                        + (isTerminalBridgeEnabled ? Self.terminalBridgeInstructions : ""),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     model: selectedModel,
@@ -797,6 +820,24 @@ final class CompanionManager: ObservableObject {
                             let ask = "i'll click \(label). say go to confirm, or cancel."
                             spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
                             print("🖐️ Hands-On: pending click on \"\(label)\"")
+                        }
+                    }
+                }
+
+                // Terminal Agent Bridge: if enabled and the model composed a prompt
+                // to dispatch, hold it for spoken confirmation before sending.
+                if isTerminalBridgeEnabled {
+                    let runParse = Self.parseRunTag(from: spokenText)
+                    spokenText = runParse.spokenText
+                    if let runPrompt = runParse.prompt {
+                        if let terminal = TerminalAgentBridge.targetTerminal() {
+                            pendingTerminalDispatch = PendingTerminalDispatch(prompt: runPrompt, terminal: terminal)
+                            let ask = "i'll send that to \(terminal.displayName). say go to confirm, or cancel."
+                            spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
+                            print("⌨️ Terminal bridge: pending dispatch to \(terminal.displayName)")
+                        } else {
+                            spokenText += spokenText.isEmpty ? "" : " "
+                            spokenText += "i don't see a terminal open to send that to."
                         }
                     }
                 }
@@ -951,6 +992,41 @@ final class CompanionManager: ObservableObject {
         sendTranscriptToClaudeWithScreenshot(transcript: transcript)
     }
 
+    // MARK: - Terminal Bridge Confirmation
+
+    /// Terminal Bridge appends this to the system prompt so the model knows it may
+    /// compose a prompt to dispatch to a terminal coding agent. Only when opted in.
+    private static let terminalBridgeInstructions = """
+
+
+    terminal bridge is ON. if the user asks you to SEND or DISPATCH a request to a coding agent running in their terminal (like "tell claude code to ...", "send this to my terminal agent", "have claude code refactor ..."), compose the exact, complete prompt to paste and append it at the very end, AFTER your spoken text: [RUN:the full prompt text]. the user confirms by voice before anything is sent. only do this when the user clearly wants to dispatch work to a terminal agent.
+    """
+
+    /// Handles the user's spoken response to a pending terminal dispatch.
+    private func resolveTerminalConfirmation(transcript: String, pending: PendingTerminalDispatch) {
+        let lower = transcript.lowercased()
+        let negations = ["cancel", "stop", "don't", "do not", "nope", "no thanks", "nevermind", "never mind", "leave it"]
+        let affirmations = ["go", "yes", "yeah", "yep", "do it", "send", "send it", "confirm", "sure", "okay", "ok", "please"]
+
+        if negations.contains(where: { lower.contains($0) }) {
+            speakSystemMessage("okay, cancelled.")
+            return
+        }
+        if affirmations.contains(where: { lower.contains($0) }) {
+            do {
+                try TerminalAgentBridge.sendPrompt(pending.prompt, to: pending.terminal)
+                speakSystemMessage("sent to \(pending.terminal.displayName).")
+            } catch {
+                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                print("⌨️ Terminal dispatch failed: \(error)")
+                speakSystemMessage("i couldn't send that.")
+            }
+            return
+        }
+        // Neither confirm nor cancel — treat as a fresh request.
+        sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+    }
+
     // MARK: - Point Tag Parsing
 
     /// Result of parsing a [POINT:...] tag from Claude's response.
@@ -1044,6 +1120,28 @@ final class CompanionManager: ObservableObject {
             screenNumber = Int(responseText[screenRange])
         }
         return ActionParseResult(spokenText: spokenText, coordinate: CGPoint(x: x, y: y), label: label, screenNumber: screenNumber)
+    }
+
+    /// Result of parsing a [RUN:prompt] tag from the response.
+    struct RunParseResult {
+        let spokenText: String
+        let prompt: String?
+    }
+
+    /// Parses `[RUN:the full prompt to dispatch]` from the end of the response.
+    /// The prompt may contain anything except a trailing `]`; non-greedy + the
+    /// end anchor captures up to the final `]`.
+    static func parseRunTag(from responseText: String) -> RunParseResult {
+        let pattern = #"\[RUN:([\s\S]+?)\]\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              let tagRange = Range(match.range, in: responseText),
+              let promptRange = Range(match.range(at: 1), in: responseText) else {
+            return RunParseResult(spokenText: responseText, prompt: nil)
+        }
+        let spokenText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = String(responseText[promptRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return RunParseResult(spokenText: spokenText, prompt: prompt.isEmpty ? nil : prompt)
     }
 
     /// Converts a screenshot-pixel coordinate within a capture to an AppKit global

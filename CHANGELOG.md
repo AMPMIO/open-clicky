@@ -26,6 +26,20 @@ Upgrades the companion from pointing-only to optionally *doing* a step, gated by
   proposing destructive/irreversible actions (delete/send/pay/quit). (`CompanionManager.swift`,
   `SettingsView.swift`, `CompanionPanelView.swift`)
 
+### F7 — Terminal Agent Bridge (epic OC-12)
+
+Voice → dispatch a request into a running terminal coding agent (e.g. a Claude Code session). Builds on F1's confirm-before-act pattern.
+
+- **OC-62 — Terminal targeting.** New `TerminalAgentBridge` finds a running, supported terminal
+  (Terminal / iTerm / Ghostty), preferring the frontmost one. (`TerminalAgentBridge.swift` new)
+- **OC-65 — `[RUN:prompt]` intent + confirm + injection.** The model composes the prompt; Clicky
+  asks for spoken confirmation, then activates the terminal and pastes the prompt + Return via the
+  pasteboard + System Events (restoring the user's clipboard after). `parseRunTag` +
+  `resolveTerminalConfirmation` in CompanionManager; opt-in toggle (`isTerminalBridgeEnabled`).
+  (`CompanionManager.swift`, `SettingsView.swift`, `Info.plist` Apple Events usage)
+- **OC-68 — Status read-back (best-effort).** `readVisibleText(from:)` scrapes the focused
+  terminal's AX value when available. (`TerminalAgentBridge.swift`)
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)

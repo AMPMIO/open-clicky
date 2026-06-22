@@ -60,6 +60,8 @@ struct SettingsView: View {
 
             handsOnSection
 
+            terminalBridgeSection
+
             Spacer()
         }
         .padding(16)
@@ -335,6 +337,27 @@ struct SettingsView: View {
                  : "Needs Accessibility permission to click on your behalf.")
                 .font(.system(size: 10))
                 .foregroundColor(companionManager.hasAccessibilityPermission ? DS.Colors.textTertiary : DS.Colors.warningText)
+        }
+    }
+
+    // MARK: - Terminal Bridge
+
+    private var terminalBridgeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { companionManager.isTerminalBridgeEnabled },
+                set: { companionManager.setTerminalBridgeEnabled($0) }
+            )) {
+                Text("Terminal Bridge (send to Claude Code)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            Text("Dispatch a spoken request to a running terminal agent (Terminal/iTerm/Ghostty) after you confirm. Needs Accessibility + Automation permission.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
         }
     }
 
