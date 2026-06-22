@@ -297,12 +297,13 @@ struct SettingsView: View {
 
         Task {
             do {
-                let (text, duration) = try await providerManager.currentProvider.chat(
+                let (text, duration) = try await providerManager.currentProvider.chatStreaming(
                     images: [],
                     systemPrompt: "Respond with exactly: OK",
                     conversationHistory: [],
                     userPrompt: "ping",
-                    model: providerManager.configuration.selectedModelID
+                    model: providerManager.configuration.selectedModelID,
+                    onTextChunk: { _ in }
                 )
                 await MainActor.run {
                     connectionTestResult = "Success (\(String(format: "%.1f", duration))s): \(text.prefix(40))"

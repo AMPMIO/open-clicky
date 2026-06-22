@@ -27,10 +27,6 @@ class ProviderManager: ObservableObject {
         updateProvider()
     }
 
-    func setSelectedModel(_ modelID: String) {
-        configuration.selectedModelID = modelID
-    }
-
     private static func buildProvider(from config: ProviderConfiguration) -> LLMProvider {
         switch config.activeProvider {
         case .workerProxy:
@@ -132,16 +128,6 @@ final class UnconfiguredProvider: LLMProvider {
         userPrompt: String,
         model: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
-    ) async throws -> (text: String, duration: TimeInterval) {
-        throw ProviderError.notConfigured(provider: displayName, reason: reason)
-    }
-
-    func chat(
-        images: [(data: Data, label: String)],
-        systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
-        userPrompt: String,
-        model: String
     ) async throws -> (text: String, duration: TimeInterval) {
         throw ProviderError.notConfigured(provider: displayName, reason: reason)
     }

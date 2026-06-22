@@ -33,20 +33,4 @@ class AnthropicProvider: LLMProvider {
             onTextChunk: onTextChunk
         )
     }
-
-    func chat(
-        images: [(data: Data, label: String)],
-        systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
-        userPrompt: String,
-        model: String
-    ) async throws -> (text: String, duration: TimeInterval) {
-        claudeAPI.model = model
-        return try await claudeAPI.analyzeImage(
-            images: images,
-            systemPrompt: systemPrompt,
-            conversationHistory: conversationHistory,
-            userPrompt: userPrompt
-        )
-    }
 }

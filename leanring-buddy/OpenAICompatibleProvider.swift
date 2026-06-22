@@ -14,9 +14,6 @@ class OpenAICompatibleProvider: LLMProvider {
     private let session: URLSession
     private let extraHeaders: [String: String]
 
-    private static let tlsWarmupLock = NSLock()
-    private static var warmedHosts: Set<String> = []
-
     init(displayName: String, baseURL: URL, apiKey: String, extraHeaders: [String: String] = [:]) {
         self.displayName = displayName
         self.baseURL = baseURL
@@ -31,7 +28,7 @@ class OpenAICompatibleProvider: LLMProvider {
         config.httpCookieStorage = nil
         self.session = URLSession(configuration: config)
 
-        warmUpTLSConnectionIfNeeded()
+        TLSWarmer.warm(baseURL, using: session)
     }
 
     // MARK: - LLMProvider
@@ -92,44 +89,6 @@ class OpenAICompatibleProvider: LLMProvider {
 
         let duration = Date().timeIntervalSince(startTime)
         return (text: accumulatedText, duration: duration)
-    }
-
-    func chat(
-        images: [(data: Data, label: String)],
-        systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
-        userPrompt: String,
-        model: String
-    ) async throws -> (text: String, duration: TimeInterval) {
-        let startTime = Date()
-        let request = try buildRequest(
-            images: images,
-            systemPrompt: systemPrompt,
-            conversationHistory: conversationHistory,
-            userPrompt: userPrompt,
-            model: model,
-            stream: false
-        )
-
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ProviderError.apiError(statusCode: statusCode, message: responseString)
-        }
-
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let choices = json?["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw ProviderError.invalidResponseFormat
-        }
-
-        let duration = Date().timeIntervalSince(startTime)
-        return (text: content, duration: duration)
     }
 
     // MARK: - Request Building
@@ -217,29 +176,6 @@ class OpenAICompatibleProvider: LLMProvider {
         }
         return "image/jpeg"
     }
-
-    private func warmUpTLSConnectionIfNeeded() {
-        guard let host = baseURL.host else { return }
-
-        Self.tlsWarmupLock.lock()
-        let alreadyWarmed = Self.warmedHosts.contains(host)
-        if !alreadyWarmed {
-            Self.warmedHosts.insert(host)
-        }
-        Self.tlsWarmupLock.unlock()
-
-        guard !alreadyWarmed else { return }
-
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        components.path = "/"
-        components.query = nil
-        guard let warmupURL = components.url else { return }
-
-        var warmupRequest = URLRequest(url: warmupURL)
-        warmupRequest.httpMethod = "HEAD"
-        warmupRequest.timeoutInterval = 10
-        session.dataTask(with: warmupRequest) { _, _, _ in }.resume()
-    }
 }
 
 // MARK: - Errors
@@ -248,7 +184,6 @@ enum ProviderError: LocalizedError {
     case invalidResponse
     case invalidResponseFormat
     case apiError(statusCode: Int, message: String)
-    case missingAPIKey(provider: String)
     case notConfigured(provider: String, reason: String)
 
     var errorDescription: String? {
@@ -259,8 +194,6 @@ enum ProviderError: LocalizedError {
             return "Could not parse response format"
         case .apiError(let code, let message):
             return "API Error (\(code)): \(message)"
-        case .missingAPIKey(let provider):
-            return "No API key configured for \(provider)"
         case .notConfigured(let provider, let reason):
             return "\(provider) isn't set up yet. \(reason)"
         }

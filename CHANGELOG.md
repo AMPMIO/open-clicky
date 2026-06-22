@@ -51,6 +51,32 @@ every backend works. Grounded in the Codex adversarial review + the assessment w
 > invalidates TCC permissions). Changes are reasoned + statically reviewed (CodeRabbit +
 > Codex adversarial review); a clean Xcode build is the final gate.
 
+### E2 — Cleanup / de-bloat (epic OC-2)
+
+Removed scaffolding-ahead-of-need surfaced by the ponytail audit (~415 lines).
+
+- **OC-16 — Deleted dead files:** `VoiceProvider.swift` (unused TTS/STT protocol stubs,
+  zero conformers), `ModelCatalogService.swift` (never referenced; the picker uses
+  hardcoded presets), and `OpenAIAPI.swift` (pre-existing unused vision client). The
+  Xcode project uses file-system-synchronized groups, so no `project.pbxproj` edits were
+  needed.
+- **OC-19 — Removed the never-thrown `ProviderError.missingAPIKey`** case (superseded by
+  `notConfigured`). (`OpenAICompatibleProvider.swift`)
+- **OC-22 — Dropped the non-streaming `chat()` path.** It existed only to power the
+  Settings "Test Connection" button; that now calls `chatStreaming` with an empty chunk
+  handler. Removed `chat()` from the `LLMProvider` protocol, `OpenAICompatibleProvider`,
+  `AnthropicProvider`, and `UnconfiguredProvider`. (`LLMProvider.swift`, `SettingsView.swift`, et al.)
+- **OC-27 — Extracted a single `TLSWarmer` helper.** The per-host TLS-warmup-via-HEAD
+  pattern was duplicated in `ClaudeAPI` and `OpenAICompatibleProvider`; both now call
+  `TLSWarmer.warm(_:using:)`. (`TLSWarmer.swift` new, `ClaudeAPI.swift`, `OpenAICompatibleProvider.swift`)
+- **OC-31 — Collapsed `setSelectedModel` forwarding** to a single path
+  (`CompanionManager.setSelectedModel`); removed the redundant `ProviderManager`
+  pass-through. (`CompanionManager.swift`, `ProviderManager.swift`)
+- **OC-34 — Updated the CLAUDE.md/AGENTS.md Key Files table** to add the multi-provider
+  layer (LLMProvider, ProviderManager, ProviderConfiguration, AnthropicProvider,
+  OpenAICompatibleProvider, KeychainManager, SettingsView, TLSWarmer) and drop the deleted
+  `OpenAIAPI.swift`.
+
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 
 ### Added

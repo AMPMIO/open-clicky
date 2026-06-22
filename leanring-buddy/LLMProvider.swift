@@ -22,13 +22,4 @@ protocol LLMProvider {
         model: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval)
-
-    /// Non-streaming chat with vision support.
-    func chat(
-        images: [(data: Data, label: String)],
-        systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
-        userPrompt: String,
-        model: String
-    ) async throws -> (text: String, duration: TimeInterval)
 }

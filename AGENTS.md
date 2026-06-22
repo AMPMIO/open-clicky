@@ -67,7 +67,14 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
+| `LLMProvider.swift` | ~22 | Protocol abstraction for streaming LLM vision chat. Implemented by `AnthropicProvider` (Worker proxy) and `OpenAICompatibleProvider` (OpenRouter/OpenClaw/Hermes). |
+| `ProviderManager.swift` | ~110 | `@MainActor` factory + `ObservableObject` that builds the active `LLMProvider` from `ProviderConfiguration`. Sanitizes endpoints (`sanitizedURL`, HTTPS-for-remote) and returns an `UnconfiguredProvider` (clear error) when a backend isn't set up. |
+| `ProviderConfiguration.swift` | ~155 | Provider selection + credentials model. Per-provider model storage, `isActiveProviderConfigured`, and the single-source-of-truth Worker base URL. Keys in Keychain, prefs in UserDefaults. |
+| `AnthropicProvider.swift` | ~37 | Adapts `ClaudeAPI` to `LLMProvider` for Worker Proxy mode (the only path that reaches `ClaudeAPI`). |
+| `OpenAICompatibleProvider.swift` | ~205 | Unified streaming client for OpenAI-compatible APIs (OpenRouter, OpenClaw, Hermes). Builds image_url + text content parts, parses `choices[].delta.content` SSE. |
+| `KeychainManager.swift` | ~50 | Generic-password Keychain wrapper for the OpenRouter key and OpenClaw/Hermes token. |
+| `SettingsView.swift` | ~305 | Provider configuration UI (provider picker, credential fields, endpoint scheme validation, Test Connection). Opened from the panel gear button. |
+| `TLSWarmer.swift` | ~40 | Shared helper that pre-establishes a TLS session per host (background HEAD) so the first large request avoids a cold handshake. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |

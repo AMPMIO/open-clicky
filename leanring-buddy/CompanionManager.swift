@@ -107,12 +107,15 @@ final class CompanionManager: ObservableObject {
     /// The model used for voice responses. Delegates to ProviderManager.
     var selectedModel: String {
         get { providerManager.configuration.selectedModelID }
-        set { providerManager.setSelectedModel(newValue) }
+        set { setSelectedModel(newValue) }
     }
 
+    /// Single entry point for model changes. The per-provider model is persisted
+    /// by ProviderConfiguration's setter; fire objectWillChange so views
+    /// observing CompanionManager update.
     func setSelectedModel(_ model: String) {
-        providerManager.setSelectedModel(model)
         objectWillChange.send()
+        providerManager.configuration.selectedModelID = model
     }
 
     /// User preference for whether the Clicky cursor should be shown.
