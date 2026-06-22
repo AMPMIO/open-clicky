@@ -77,6 +77,21 @@ On-device, opt-in recall of what Clicky has seen — answer "what was that … e
 - **OC-54 — Privacy controls.** Off by default; Settings toggle, per-app exclude list, pause,
   and a one-tap purge of all saved moments. (`SettingsView.swift`, `ScreenMemoryStore.swift`)
 
+### F4 — Live Companion (epic OC-9)
+
+Lets Clicky hear what's playing on the Mac (a call, tutorial, video) AND see the screen.
+
+- **OC-50 — System-audio capture.** New `SystemAudioCaptureService` uses ScreenCaptureKit
+  (`SCStreamConfiguration.capturesAudio`, excludes Clicky's own output) to capture system audio,
+  converting CMSampleBuffers to PCM16 mono. Bot-free, no kernel extension. (`SystemAudioCaptureService.swift` new)
+- **OC-53 — Transcription.** On-demand one-shot transcription of the buffered audio via OpenAI
+  Whisper (reuses the `OpenAIAPIKey`), building a WAV with the existing `BuddyWAVFileBuilder`.
+- **OC-58 / OC-61 — Fusion + summary.** When Live Companion is on, a rolling ~3-min audio buffer
+  is transcribed and folded into the prompt alongside the screenshots, so "what did they just
+  ask?" / "summarize the last few minutes" work. (`CompanionManager.swift`)
+- Opt-in toggle in Settings (off by default; needs Screen Recording + an OpenAI key for
+  transcription). (`SettingsView.swift`)
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)

@@ -66,6 +66,8 @@ struct SettingsView: View {
 
             screenMemorySection
 
+            liveCompanionSection
+
             Spacer()
         }
         .padding(16)
@@ -398,6 +400,27 @@ struct SettingsView: View {
                     Text("This permanently deletes all saved moments. This can't be undone.")
                 }
             }
+        }
+    }
+
+    // MARK: - Live Companion
+
+    private var liveCompanionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { companionManager.isLiveCompanionEnabled },
+                set: { companionManager.setLiveCompanionEnabled($0) }
+            )) {
+                Text("Live Companion (hear system audio)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription uses OpenAI (set OpenAIAPIKey in Info.plist).")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
         }
     }
 

@@ -168,6 +168,45 @@ final class CompanionManager: ObservableObject {
     }
     private var pendingTerminalDispatch: PendingTerminalDispatch?
 
+    // MARK: - Live Companion (system audio)
+
+    let systemAudioCaptureService = SystemAudioCaptureService()
+
+    /// Opt-in: capture system audio so Clicky can answer about a call/tutorial/video
+    /// it "heard" alongside what it sees. Off by default.
+    @Published var isLiveCompanionEnabled: Bool = UserDefaults.standard.bool(forKey: "isLiveCompanionEnabled")
+
+    /// Rolling PCM16 buffer of recent system audio (~last 3 minutes).
+    private var systemAudioBuffer = Data()
+    private let systemAudioBufferMaxBytes = Int(SystemAudioCaptureService.targetSampleRate) * 2 * 180
+
+    func setLiveCompanionEnabled(_ enabled: Bool) {
+        isLiveCompanionEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLiveCompanionEnabled")
+        if enabled {
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.systemAudioCaptureService.start { [weak self] pcm in
+                        self?.appendSystemAudio(pcm)
+                    }
+                } catch {
+                    print("⚠️ Live Companion: failed to start system-audio capture: \(error)")
+                }
+            }
+        } else {
+            systemAudioBuffer = Data()
+            Task { [weak self] in await self?.systemAudioCaptureService.stop() }
+        }
+    }
+
+    private func appendSystemAudio(_ pcm: Data) {
+        systemAudioBuffer.append(pcm)
+        if systemAudioBuffer.count > systemAudioBufferMaxBytes {
+            systemAudioBuffer.removeFirst(systemAudioBuffer.count - systemAudioBufferMaxBytes)
+        }
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -242,6 +281,20 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
+        }
+
+        // Resume Live Companion system-audio capture if it was on before a restart.
+        if isLiveCompanionEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.systemAudioCaptureService.start { [weak self] pcm in
+                        self?.appendSystemAudio(pcm)
+                    }
+                } catch {
+                    print("⚠️ Live Companion: failed to resume system-audio capture: \(error)")
+                }
+            }
         }
     }
 
@@ -736,6 +789,18 @@ final class CompanionManager: ObservableObject {
                     if !recalls.isEmpty { print("🧠 Screen Memory: injected \(recalls.count) past moment(s)") }
                 }
 
+                // Live Companion: fold in a transcript of recently-heard system
+                // audio so Clicky can answer about a call/tutorial it "heard".
+                var userPromptForModel = transcript
+                if isLiveCompanionEnabled, !systemAudioBuffer.isEmpty {
+                    if let heard = try? await SystemAudioCaptureService.transcribe(
+                        pcm16: systemAudioBuffer,
+                        sampleRate: Int(SystemAudioCaptureService.targetSampleRate)
+                    ), !heard.isEmpty {
+                        userPromptForModel = "[recent audio on screen: \(heard)]\n\n\(transcript)"
+                    }
+                }
+
                 let (fullResponseText, _) = try await providerManager.currentProvider.chatStreaming(
                     images: images,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt
@@ -743,7 +808,7 @@ final class CompanionManager: ObservableObject {
                         + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : "")
                         + (isTerminalBridgeEnabled ? Self.terminalBridgeInstructions : ""),
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: userPromptForModel,
                     model: selectedModel,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
