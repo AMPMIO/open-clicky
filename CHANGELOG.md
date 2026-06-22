@@ -40,6 +40,20 @@ Voice → dispatch a request into a running terminal coding agent (e.g. a Claude
 - **OC-68 — Status read-back (best-effort).** `readVisibleText(from:)` scrapes the focused
   terminal's AX value when available. (`TerminalAgentBridge.swift`)
 
+### Action-safety hardening — Codex F1 review follow-ups (OC-82–85, hardens F1 + F7)
+
+- **OC-82 — Exact-phrase confirmation grammar.** Replaced substring matching (which let
+  "okay, what will you click?" fire an action) with a normalized exact-phrase
+  `confirmationVerdict`; anything ambiguous never executes. (`CompanionManager.swift`)
+- **OC-83 — Kill switch cancels pending actions.** Turning Hands-On / Terminal Bridge off now
+  clears any pending action, and the resolvers refuse to act when the feature is off.
+- **OC-84 — Runtime destructive-action denylist.** `isDestructiveActionLabel` blocks queuing a
+  click whose label looks destructive (delete/send/pay/quit/…), regardless of the prompt — it
+  points + warns instead.
+- **OC-85 — Stale-action revalidation (TOCTOU).** Pending clicks capture the frontmost app +
+  timestamp and are refused at execution if the app changed or the proposal is stale (>30s;
+  terminal dispatch >60s).
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)

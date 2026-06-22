@@ -132,12 +132,20 @@ final class CompanionManager: ObservableObject {
     func setHandsOnModeEnabled(_ enabled: Bool) {
         isHandsOnModeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isHandsOnModeEnabled")
+        // Turning the feature off is a kill switch: drop any pending click.
+        if !enabled {
+            pendingHandsOnAction = nil
+            clearDetectedElementLocation()
+        }
     }
 
-    /// A proposed action awaiting the user's spoken confirmation.
+    /// A proposed action awaiting the user's spoken confirmation. Captures context
+    /// at proposal time so it can be revalidated / expired before the press fires.
     private struct PendingHandsOnAction {
         let quartzPoint: CGPoint
         let label: String
+        let frontmostAppBundleID: String?
+        let proposedAt: Date
     }
     private var pendingHandsOnAction: PendingHandsOnAction?
 
@@ -150,11 +158,13 @@ final class CompanionManager: ObservableObject {
     func setTerminalBridgeEnabled(_ enabled: Bool) {
         isTerminalBridgeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isTerminalBridgeEnabled")
+        if !enabled { pendingTerminalDispatch = nil }
     }
 
     private struct PendingTerminalDispatch {
         let prompt: String
         let terminal: TerminalApp
+        let proposedAt: Date
     }
     private var pendingTerminalDispatch: PendingTerminalDispatch?
 
@@ -813,13 +823,23 @@ final class CompanionManager: ObservableObject {
                             let appKitLocation = Self.appKitGlobalLocation(forScreenshotCoordinate: actionCoordinate, in: actionScreenCapture)
                             detectedElementScreenLocation = appKitLocation
                             detectedElementDisplayFrame = actionScreenCapture.displayFrame
-                            pendingHandsOnAction = PendingHandsOnAction(
-                                quartzPoint: AccessibilityActuator.quartzPoint(fromAppKitGlobal: appKitLocation),
-                                label: label
-                            )
-                            let ask = "i'll click \(label). say go to confirm, or cancel."
-                            spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
-                            print("🖐️ Hands-On: pending click on \"\(label)\"")
+                            if Self.isDestructiveActionLabel(label) {
+                                // Runtime guardrail: never auto-queue a risky click,
+                                // even if the model proposed one — point and warn instead.
+                                spokenText += spokenText.isEmpty ? "" : " "
+                                spokenText += "that looks risky, so i'll point at \(label) but you should click it yourself."
+                                print("🖐️ Hands-On: refused destructive action \"\(label)\"")
+                            } else {
+                                pendingHandsOnAction = PendingHandsOnAction(
+                                    quartzPoint: AccessibilityActuator.quartzPoint(fromAppKitGlobal: appKitLocation),
+                                    label: label,
+                                    frontmostAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                                    proposedAt: Date()
+                                )
+                                let ask = "i'll click \(label). say go to confirm, or cancel."
+                                spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
+                                print("🖐️ Hands-On: pending click on \"\(label)\"")
+                            }
                         }
                     }
                 }
@@ -831,7 +851,7 @@ final class CompanionManager: ObservableObject {
                     spokenText = runParse.spokenText
                     if let runPrompt = runParse.prompt {
                         if let terminal = TerminalAgentBridge.targetTerminal() {
-                            pendingTerminalDispatch = PendingTerminalDispatch(prompt: runPrompt, terminal: terminal)
+                            pendingTerminalDispatch = PendingTerminalDispatch(prompt: runPrompt, terminal: terminal, proposedAt: Date())
                             let ask = "i'll send that to \(terminal.displayName). say go to confirm, or cancel."
                             spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
                             print("⌨️ Terminal bridge: pending dispatch to \(terminal.displayName)")
@@ -953,6 +973,44 @@ final class CompanionManager: ObservableObject {
         scheduleTransientHideIfNeeded()
     }
 
+    // MARK: - Action Safety
+
+    enum ConfirmationVerdict { case confirm, cancel, ambiguous }
+
+    /// Maps a transcript to a confirmation decision using an exact-phrase grammar
+    /// (after stripping punctuation), so unrelated speech like "okay, what will you
+    /// click?" never counts as a confirmation for an action that clicks UI.
+    static func confirmationVerdict(for transcript: String) -> ConfirmationVerdict {
+        let allowed = CharacterSet.letters.union(.whitespaces)
+        let cleaned = String(transcript.lowercased().unicodeScalars.filter { allowed.contains($0) })
+        let phrase = cleaned.split(separator: " ").joined(separator: " ")
+        let confirmations: Set<String> = [
+            "go", "go ahead", "go for it", "yes", "yeah", "yep", "do it",
+            "confirm", "click it", "send it", "send"
+        ]
+        let cancellations: Set<String> = [
+            "no", "cancel", "stop", "nope", "dont", "do not", "never mind",
+            "nevermind", "leave it", "no thanks", "forget it"
+        ]
+        if confirmations.contains(phrase) { return .confirm }
+        if cancellations.contains(phrase) { return .cancel }
+        return .ambiguous
+    }
+
+    private static let destructiveActionKeywords = [
+        "delete", "remove", "trash", "discard", "erase", "wipe", "format",
+        "send", "submit", "post", "publish", "share", "pay", "purchase", "buy",
+        "checkout", "order", "quit", "close", "shut down", "shutdown", "log out",
+        "sign out", "uninstall", "deactivate", "unsubscribe", "reset", "confirm"
+    ]
+
+    /// Whether an action label looks destructive/irreversible — a RUNTIME guardrail
+    /// so such actions are never auto-queued even if the model proposes one.
+    static func isDestructiveActionLabel(_ label: String) -> Bool {
+        let lowered = label.lowercased()
+        return destructiveActionKeywords.contains { lowered.contains($0) }
+    }
+
     // MARK: - Hands-On Confirmation
 
     /// Hands-On Mode appends this to the system prompt so the model knows it may
@@ -968,15 +1026,26 @@ final class CompanionManager: ObservableObject {
     /// request. The action only executes here, after explicit confirmation.
     private func resolveHandsOnConfirmation(transcript: String, pending: PendingHandsOnAction) {
         clearDetectedElementLocation()
-        let lower = transcript.lowercased()
-        let negations = ["cancel", "stop", "don't", "do not", "nope", "no thanks", "nevermind", "never mind", "leave it"]
-        let affirmations = ["go", "yes", "yeah", "yep", "do it", "confirm", "click", "sure", "okay", "ok", "please"]
-
-        if negations.contains(where: { lower.contains($0) }) {
-            speakSystemMessage("okay, cancelled.")
+        // If the feature was turned off after the action was proposed, never act.
+        guard isHandsOnModeEnabled else {
+            speakSystemMessage("hands-on mode is off.")
             return
         }
-        if affirmations.contains(where: { lower.contains($0) }) {
+        switch Self.confirmationVerdict(for: transcript) {
+        case .cancel:
+            speakSystemMessage("okay, cancelled.")
+        case .ambiguous:
+            // Not a clear yes/no — don't click; treat it as a fresh request.
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+        case .confirm:
+            // Revalidate: refuse if the proposal is stale or the active app changed
+            // since it was proposed (the coordinate may now point at something else).
+            let currentApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            guard Date().timeIntervalSince(pending.proposedAt) < 30,
+                  currentApp == pending.frontmostAppBundleID else {
+                speakSystemMessage("the screen changed, so i didn't click. ask me again.")
+                return
+            }
             ClickyAnalytics.trackElementPointed(elementLabel: "hands-on:" + pending.label)
             do {
                 try AccessibilityActuator.press(atQuartzPoint: pending.quartzPoint)
@@ -986,10 +1055,7 @@ final class CompanionManager: ObservableObject {
                 print("🖐️ Hands-On action failed: \(error)")
                 speakSystemMessage("i couldn't click that.")
             }
-            return
         }
-        // Neither a confirmation nor a cancellation — treat it as a fresh request.
-        sendTranscriptToClaudeWithScreenshot(transcript: transcript)
     }
 
     // MARK: - Terminal Bridge Confirmation
@@ -1004,15 +1070,20 @@ final class CompanionManager: ObservableObject {
 
     /// Handles the user's spoken response to a pending terminal dispatch.
     private func resolveTerminalConfirmation(transcript: String, pending: PendingTerminalDispatch) {
-        let lower = transcript.lowercased()
-        let negations = ["cancel", "stop", "don't", "do not", "nope", "no thanks", "nevermind", "never mind", "leave it"]
-        let affirmations = ["go", "yes", "yeah", "yep", "do it", "send", "send it", "confirm", "sure", "okay", "ok", "please"]
-
-        if negations.contains(where: { lower.contains($0) }) {
-            speakSystemMessage("okay, cancelled.")
+        guard isTerminalBridgeEnabled else {
+            speakSystemMessage("terminal bridge is off.")
             return
         }
-        if affirmations.contains(where: { lower.contains($0) }) {
+        switch Self.confirmationVerdict(for: transcript) {
+        case .cancel:
+            speakSystemMessage("okay, cancelled.")
+        case .ambiguous:
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+        case .confirm:
+            guard Date().timeIntervalSince(pending.proposedAt) < 60 else {
+                speakSystemMessage("that request expired, ask me again.")
+                return
+            }
             do {
                 try TerminalAgentBridge.sendPrompt(pending.prompt, to: pending.terminal)
                 speakSystemMessage("sent to \(pending.terminal.displayName).")
@@ -1021,10 +1092,7 @@ final class CompanionManager: ObservableObject {
                 print("⌨️ Terminal dispatch failed: \(error)")
                 speakSystemMessage("i couldn't send that.")
             }
-            return
         }
-        // Neither confirm nor cancel — treat as a fresh request.
-        sendTranscriptToClaudeWithScreenshot(transcript: transcript)
     }
 
     // MARK: - Point Tag Parsing
