@@ -68,14 +68,13 @@ class OpenAICompatibleProvider: LLMProvider {
 
         var accumulatedText = ""
         var sawAnyContentChunk = false
-        var sawDone = false
 
         for try await line in byteStream.lines {
             // Accept both "data: {...}" and "data:{...}"; skip SSE comments (":..."),
             // keep-alives, and blank lines.
             guard line.hasPrefix("data:") else { continue }
             let payloadString = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard payloadString != "[DONE]" else { sawDone = true; break }
+            guard payloadString != "[DONE]" else { break }
             guard !payloadString.isEmpty else { continue }
 
             guard let jsonData = payloadString.data(using: .utf8),
@@ -103,11 +102,11 @@ class OpenAICompatibleProvider: LLMProvider {
             await onTextChunk(currentText)
         }
 
-        // If the stream produced no recognizable OpenAI content and never sent
-        // [DONE], treat it as a format mismatch (e.g. a non-OpenAI endpoint, or a
-        // backend that ignored `stream` and returned a plain JSON body) rather than
-        // reporting empty success.
-        guard sawAnyContentChunk || sawDone else {
+        // Require at least one parsed content chunk. A stream of only role/finish
+        // frames or a bare [DONE] — e.g. a non-OpenAI endpoint or a backend that
+        // ignored `stream` and returned a plain JSON body — is a format mismatch,
+        // not an empty success that silently skips TTS/pointing.
+        guard sawAnyContentChunk else {
             throw ProviderError.invalidResponseFormat
         }
 

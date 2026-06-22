@@ -78,6 +78,14 @@ class ProviderManager: ObservableObject {
             let endpoint = config.openClawEndpoint.isEmpty
                 ? "http://localhost:18789"
                 : config.openClawEndpoint
+            // Require an explicit token so a blank config can't silently send
+            // screenshots to whatever process binds the default local port.
+            guard !token.isEmpty else {
+                return UnconfiguredProvider(
+                    provider: "OpenClaw",
+                    reason: "Add the OpenClaw bearer token in Settings."
+                )
+            }
             // OpenClaw exposes an OpenAI-compatible chat-completions endpoint.
             // The agent session endpoint (/api/sessions/.../messages) speaks a
             // different request/response shape the shared OpenAI parser cannot
@@ -99,6 +107,14 @@ class ProviderManager: ObservableObject {
             let endpoint = config.hermesEndpoint.isEmpty
                 ? ProviderConfiguration.defaultHermesEndpoint
                 : config.hermesEndpoint
+            // Require an explicit token (Hermes's API_SERVER_KEY) so a blank config
+            // can't silently send screenshots to whatever binds localhost:8642.
+            guard !token.isEmpty else {
+                return UnconfiguredProvider(
+                    provider: "Hermes",
+                    reason: "Add the Hermes API token in Settings."
+                )
+            }
             // Nous Hermes Agent exposes an OpenAI-compatible chat-completions
             // server (default http://localhost:8642), so it reuses OpenAICompatibleProvider
             // verbatim — same image_url vision parts and choices[].delta.content SSE.
@@ -127,16 +143,15 @@ class ProviderManager: ObservableObject {
         guard let url = URL(string: normalizedBase + path),
               let scheme = url.scheme?.lowercased(),
               let host = url.host, !host.isEmpty else { return nil }
-        // Only http/https. Cleartext http is allowed only for loopback / .local
-        // (matches the Info.plist ATS policy and the Settings validator), so a
-        // remote VPS/subscription endpoint must use https or it is rejected.
+        // Only http/https. Cleartext http is allowed ONLY for true loopback — a
+        // `.local`/mDNS or LAN host can resolve to another machine, so sending the
+        // bearer token + screenshots there in plaintext is unsafe. Those must use https.
         switch scheme {
         case "https":
             return url
         case "http":
             let lowerHost = host.lowercased()
-            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1"
-                || lowerHost == "::1" || lowerHost.hasSuffix(".local")
+            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1" || lowerHost == "::1"
             return isLoopback ? url : nil
         default:
             return nil

@@ -159,6 +159,23 @@ agent-mode gap vs the commercial HeyClicky using the user's own agent.
   Hands-On actuation layer (F1 / OC-6), which is a later wave — so action mode currently
   falls back to answer+point and the UI says so. **OC-46 stays open, blocked on F1.**
 
+### E5 hardening — Codex adversarial review follow-ups (OC-76–79)
+
+- **OC-76 — Agent backends require an explicit token (security).** A blank Hermes/OpenClaw
+  config no longer builds a "ready" provider — `buildProvider` returns `UnconfiguredProvider`
+  unless a bearer token is set, so the voice pipeline can't capture screens and POST them to
+  whatever process binds the default local port. (`ProviderManager.swift`)
+- **OC-77 — Cleartext only for true loopback (security).** Dropped `.local` from the http
+  allowlist in both `ProviderManager.sanitizedURL` and `SettingsView` validation — `.local`
+  can resolve to another LAN machine, so it (and any non-loopback host) must use https or the
+  bearer token + screenshots would go in plaintext. (`ProviderManager.swift`, `SettingsView.swift`)
+- **OC-78 — Honest Hermes readiness check.** The probe now parses the reply with the same
+  `CompanionManager.parsePointingCoordinates` Mode A uses (requiring a real coordinate),
+  requires the exact diagnostic token, and labels the vision line honestly. (`SettingsView.swift`)
+- **OC-79 — SSE requires content for success.** `chatStreaming` now requires at least one
+  parsed content chunk; a bare `[DONE]` / contentless stream throws `invalidResponseFormat`
+  instead of reporting empty success. (`OpenAICompatibleProvider.swift`)
+
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 
 ### Added

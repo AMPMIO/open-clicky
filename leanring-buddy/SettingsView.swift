@@ -251,13 +251,15 @@ struct SettingsView: View {
                     onTextChunk: { _ in }
                 )
                 let respondedAtAll = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                let honorsSystemPrompt = text.localizedCaseInsensitiveContains("READY")
-                let preservesPointTags = text.contains("[POINT:")
+                let honorsSystemPrompt = text.contains("READY")
+                // Use the SAME parser Mode A uses, so the check reflects whether
+                // pointing would actually animate — not just that "[POINT:" appears.
+                let parsedCoordinate = CompanionManager.parsePointingCoordinates(from: text).coordinate
                 await MainActor.run {
                     var lines: [String] = []
-                    lines.append(respondedAtAll ? "✓ responded (vision request accepted)" : "✗ empty response")
+                    lines.append(respondedAtAll ? "✓ accepted image input (vision not deeply verified)" : "✗ empty / no response")
                     lines.append(honorsSystemPrompt ? "✓ honors the system prompt" : "✗ system prompt ignored or reformatted")
-                    lines.append(preservesPointTags ? "✓ preserves [POINT:] tags (pointing should work)" : "✗ no [POINT:] tag — pointing may not work")
+                    lines.append(parsedCoordinate != nil ? "✓ emits parseable [POINT:] tags — pointing works" : "✗ no parseable [POINT:] tag — pointing won't work")
                     hermesReadinessResult = lines.joined(separator: "\n")
                     isCheckingHermes = false
                 }
@@ -374,9 +376,8 @@ struct SettingsView: View {
             return nil
         case "http":
             let lowerHost = host.lowercased()
-            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1"
-                || lowerHost == "::1" || lowerHost.hasSuffix(".local")
-            return isLoopback ? nil : "Remote endpoints must use https — http is blocked except for localhost."
+            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1" || lowerHost == "::1"
+            return isLoopback ? nil : "Remote / .local endpoints must use https — http is allowed only for localhost."
         default:
             return "URL must start with http:// or https://"
         }
