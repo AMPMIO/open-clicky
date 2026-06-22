@@ -181,6 +181,11 @@ agent-mode gap vs the commercial HeyClicky using the user's own agent.
   (`ProviderManager.sanitizedURL`), TTS, and transcription — and TTS/transcription fail closed
   (skip rather than POST) when the Worker URL is non-loopback cleartext or malformed.
   (`ProviderConfiguration.swift`, `ProviderManager.swift`, `CompanionManager.swift`, `AssemblyAIStreamingTranscriptionProvider.swift`)
+- **OC-81 — Unconfigured Worker placeholder fails closed (security).** `workerRouteURL` now
+  returns nil for the default placeholder URL, so a user who configures OpenRouter/OpenClaw/
+  Hermes but leaves the Worker URL unset no longer sends TTS/transcription traffic to the
+  placeholder host — chat, TTS, and transcription all treat the placeholder as "no Worker."
+  (`ProviderConfiguration.swift`)
 
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 

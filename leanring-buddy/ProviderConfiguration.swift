@@ -108,9 +108,13 @@ struct ProviderConfiguration {
     }
 
     /// Validated URL for a Worker route (e.g. "/chat", "/tts", "/transcribe-token"),
-    /// or nil if the configured Worker URL is malformed or non-loopback cleartext.
+    /// or nil if the configured Worker URL is malformed, non-loopback cleartext, or
+    /// still the unconfigured placeholder. Treating the placeholder as "no Worker"
+    /// makes TTS/transcription fail closed instead of posting to an unintended host.
     static func workerRouteURL(_ path: String) -> URL? {
-        validatedURL(base: workerBaseURLFromDefaults, path: path)
+        let base = workerBaseURLFromDefaults
+        guard base != defaultWorkerBaseURL else { return nil }
+        return validatedURL(base: base, path: path)
     }
 
     // MARK: - Properties
