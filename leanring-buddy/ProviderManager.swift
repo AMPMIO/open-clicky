@@ -31,6 +31,12 @@ class ProviderManager: ObservableObject {
         !(currentProvider is UnconfiguredProvider)
     }
 
+    /// Capabilities of the active backend (vision / streaming / pointing), used to
+    /// drive Settings hints and behavior.
+    var currentProviderCapabilities: ProviderCapabilities {
+        configuration.activeProvider.capabilities
+    }
+
     func setActiveProvider(_ provider: APIProviderType) {
         configuration.activeProvider = provider
         updateProvider()

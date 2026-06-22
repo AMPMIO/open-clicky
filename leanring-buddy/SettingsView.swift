@@ -32,6 +32,8 @@ struct SettingsView: View {
             // Provider Selection
             providerPicker
 
+            capabilitiesHint
+
             // Provider-specific fields
             switch providerManager.configuration.activeProvider {
             case .openRouter:
@@ -77,6 +79,17 @@ struct SettingsView: View {
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
+    }
+
+    /// Small caption showing the active backend's capabilities (vision /
+    /// streaming / pointing), so the user knows what to expect — e.g. that
+    /// pointing on an agent backend depends on the underlying model.
+    private var capabilitiesHint: some View {
+        let caps = providerManager.currentProviderCapabilities
+        let pointing = caps.reliablyEmitsPointTags ? "pointing supported" : "pointing depends on the model"
+        return Text("vision \(caps.supportsVision ? "✓" : "✗") · streaming \(caps.supportsStreaming ? "✓" : "✗") · \(pointing)")
+            .font(.system(size: 10))
+            .foregroundColor(DS.Colors.textTertiary)
     }
 
     private func providerTab(_ provider: APIProviderType) -> some View {
@@ -127,60 +140,22 @@ struct SettingsView: View {
     // MARK: - OpenClaw Section
 
     private var openClawSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw Endpoint")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                TextField("http://your-vps:18789", text: $openClawEndpointInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, design: .monospaced))
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.surface2)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                    )
-                    .onChange(of: openClawEndpointInput) { newValue in
-                        openClawEndpointError = Self.endpointValidationError(newValue)
-                        providerManager.configuration.openClawEndpoint = newValue
-                        providerManager.updateProvider()
-                    }
-
-                if let openClawEndpointError {
-                    Text(openClawEndpointError)
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.warningText)
-                }
+        AgentEndpointSettingsView(
+            endpointLabel: "OpenClaw Endpoint",
+            endpointPlaceholder: "http://your-vps:18789",
+            endpoint: $openClawEndpointInput,
+            token: $openClawTokenInput,
+            endpointError: openClawEndpointError,
+            onEndpointChange: { newValue in
+                openClawEndpointError = Self.endpointValidationError(newValue)
+                providerManager.configuration.openClawEndpoint = newValue
+                providerManager.updateProvider()
+            },
+            onTokenChange: { newValue in
+                providerManager.configuration.openClawToken = newValue
+                providerManager.updateProvider()
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Bearer Token")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                SecureField("Token", text: $openClawTokenInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, design: .monospaced))
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.surface2)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                    )
-                    .onChange(of: openClawTokenInput) { newValue in
-                        providerManager.configuration.openClawToken = newValue
-                        providerManager.updateProvider()
-                    }
-            }
-        }
+        )
     }
 
     // MARK: - Worker Proxy Section
@@ -314,6 +289,69 @@ struct SettingsView: View {
                     connectionTestResult = "Error: \(error.localizedDescription.prefix(80))"
                     isTestingConnection = false
                 }
+            }
+        }
+    }
+}
+
+/// Reusable settings block for a self-hosted OpenAI-compatible agent backend:
+/// an endpoint URL (with scheme validation) plus a bearer token. Shared by the
+/// OpenClaw and Hermes provider sections.
+struct AgentEndpointSettingsView: View {
+    let endpointLabel: String
+    let endpointPlaceholder: String
+    @Binding var endpoint: String
+    @Binding var token: String
+    let endpointError: String?
+    let onEndpointChange: (String) -> Void
+    let onTokenChange: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(endpointLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                TextField(endpointPlaceholder, text: $endpoint)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(DS.Colors.surface2)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+                    .onChange(of: endpoint) { newValue in onEndpointChange(newValue) }
+
+                if let endpointError {
+                    Text(endpointError)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.warningText)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bearer Token")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                SecureField("Token", text: $token)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(DS.Colors.surface2)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+                    .onChange(of: token) { newValue in onTokenChange(newValue) }
             }
         }
     }

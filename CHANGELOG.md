@@ -106,6 +106,25 @@ Removed scaffolding-ahead-of-need surfaced by the ponytail audit (~415 lines).
   question ("ask me about what's on your screen") instead of a generic "introduce yourself."
   (`CompanionManager.swift`)
 - **OC-24 — Pulsing halo** on the pointing cursor (shipped in commit 377e34d).
+- **OC-72 — App-context made conditional (Codex follow-up).** The app addendum no longer
+  asserts the frontmost app authoritatively (it's a global guess that can desync from the
+  captured screen); it's now phrased "only if the screenshot actually shows X … otherwise
+  go by what you see," so it can't bias pointing to the wrong app/screen. (`CompanionManager.swift`)
+
+### E4 — Provider foundation refactor (epic OC-4)
+
+- **OC-23 / OC-36 — Provider capability model.** Added `ProviderCapabilities`
+  (vision / streaming / reliable-pointing) and `APIProviderType.capabilities`, exposed via
+  `ProviderManager.currentProviderCapabilities`. Agent backends (OpenClaw/Hermes) report
+  `reliablyEmitsPointTags = false` since pointing depends on the underlying model. Settings
+  shows a per-provider capability hint. (`LLMProvider.swift`, `ProviderConfiguration.swift`,
+  `ProviderManager.swift`, `SettingsView.swift`)
+- **OC-26 — Hardened the shared OpenAI-compatible client.** SSE parsing now accepts
+  `data:{...}` (no space), skips comments/keep-alives/blank lines, and trims payloads
+  before decoding. (`OpenAICompatibleProvider.swift`)
+- **OC-30 — Reusable agent-endpoint Settings component.** Extracted
+  `AgentEndpointSettingsView` (endpoint + scheme validation + bearer token) from the
+  OpenClaw section so OpenClaw and Hermes share one UI. (`SettingsView.swift`)
 
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 

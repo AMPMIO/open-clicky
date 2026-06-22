@@ -30,6 +30,20 @@ enum APIProviderType: String, CaseIterable, Codable {
         case .openClaw: return "anthropic/claude-sonnet-4-6"
         }
     }
+
+    /// Capability descriptor used to drive UI affordances and pipeline behavior.
+    /// Agent backends (OpenClaw/Hermes) can't guarantee POINT-tag support because
+    /// it depends on the underlying model the user configured behind them.
+    var capabilities: ProviderCapabilities {
+        switch self {
+        case .workerProxy:
+            return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: true)
+        case .openRouter:
+            return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: true)
+        case .openClaw:
+            return ProviderCapabilities(supportsVision: true, supportsStreaming: true, reliablyEmitsPointTags: false)
+        }
+    }
 }
 
 struct ProviderConfiguration {

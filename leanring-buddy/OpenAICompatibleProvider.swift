@@ -69,11 +69,14 @@ class OpenAICompatibleProvider: LLMProvider {
         var accumulatedText = ""
 
         for try await line in byteStream.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let jsonString = String(line.dropFirst(6))
-            guard jsonString != "[DONE]" else { break }
+            // Accept both "data: {...}" and "data:{...}"; skip SSE comments (":..."),
+            // keep-alives, and blank lines.
+            guard line.hasPrefix("data:") else { continue }
+            let payloadString = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard payloadString != "[DONE]" else { break }
+            guard !payloadString.isEmpty else { continue }
 
-            guard let jsonData = jsonString.data(using: .utf8),
+            guard let jsonData = payloadString.data(using: .utf8),
                   let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
                   let choices = payload["choices"] as? [[String: Any]],
                   let firstChoice = choices.first,

@@ -586,25 +586,36 @@ final class CompanionManager: ObservableObject {
         let bundleID = (app.bundleIdentifier ?? "").lowercased()
         let name = (app.localizedName ?? "").lowercased()
 
-        let hint: String?
+        let appName: String
+        let domainHint: String
         if bundleID.contains("figma") || name.contains("figma") {
-            hint = "the user is in figma — think in frames, components, auto layout, constraints, and the design/prototype panels."
+            appName = "Figma"
+            domainHint = "think in frames, components, auto layout, constraints, and the design/prototype panels"
         } else if bundleID.contains("blackmagic") || name.contains("davinci") {
-            hint = "the user is in davinci resolve — think in the cut/edit/color/fairlight/deliver pages, nodes, and color wheels."
+            appName = "DaVinci Resolve"
+            domainHint = "think in the cut/edit/color/fairlight/deliver pages, nodes, and color wheels"
         } else if bundleID.contains("image-line") || name.contains("fl studio") {
-            hint = "the user is in fl studio — think in the channel rack, piano roll, playlist, mixer, and patterns."
+            appName = "FL Studio"
+            domainHint = "think in the channel rack, piano roll, playlist, mixer, and patterns"
         } else if name.contains("after effects") {
-            hint = "the user is in after effects — think in compositions, layers, keyframes, the timeline, and effects."
+            appName = "After Effects"
+            domainHint = "think in compositions, layers, keyframes, the timeline, and effects"
         } else if bundleID == "com.apple.dt.xcode" {
-            hint = "the user is in xcode — think in the navigator, editor, run/stop controls, breakpoints, and the source control menu."
+            appName = "Xcode"
+            domainHint = "think in the navigator, editor, run/stop controls, breakpoints, and the source control menu"
         } else if bundleID.contains("vscode") || name.contains("visual studio code") || name.contains("cursor") {
-            hint = "the user is in a code editor — think in files, the integrated terminal, the command palette, and the source control panel."
+            appName = "a code editor"
+            domainHint = "think in files, the integrated terminal, the command palette, and the source control panel"
         } else {
-            hint = nil
+            return ""
         }
 
-        guard let hint else { return "" }
-        return "\n\nactive app context: \(hint) reference concrete on-screen elements when you point."
+        // The frontmost app is a GLOBAL guess that may not match the captured
+        // screen (multi-monitor, app switching, or the focused app differing from
+        // the cursor's display). Frame it conditionally and let the pixels win —
+        // never present it as authoritative — to avoid biasing pointing toward the
+        // wrong app/screen.
+        return "\n\nscreen hint: the frontmost app may be \(appName). ONLY if the screenshot actually shows \(appName), \(domainHint). if the screen shows something else, ignore this entirely and go by what you actually see."
     }
 
     // MARK: - AI Response Pipeline
