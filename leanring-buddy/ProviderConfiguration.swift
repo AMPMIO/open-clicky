@@ -67,6 +67,7 @@ struct ProviderConfiguration {
     private static let hermesEndpointKey = "hermesEndpoint"
     private static let hermesActionModeKey = "hermesActionModeEnabled"
     private static let workerBaseURLKey = "workerBaseURL"
+    private static let oauthConfigKey = "oauthConfig"
     /// Selected model is stored PER provider so switching backends never sends an
     /// incompatible model id (e.g. an OpenRouter slug to the Anthropic route).
     private static let selectedModelKeyPrefix = "selectedModelID."
@@ -141,6 +142,23 @@ struct ProviderConfiguration {
 
     var hermesEndpoint: String {
         didSet { UserDefaults.standard.set(hermesEndpoint, forKey: Self.hermesEndpointKey) }
+    }
+
+    /// User-supplied OAuth app config for "Sign in with ChatGPT"-style auth.
+    /// Non-secret (client id + endpoints); the resulting tokens live in the
+    /// Keychain via OAuthSignInManager.
+    var oauthConfig: OAuthConfig {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: Self.oauthConfigKey),
+                  let config = try? JSONDecoder().decode(OAuthConfig.self, from: data) else {
+                return OAuthConfig()
+            }
+            return config
+        }
+        set {
+            guard let encoded = try? JSONEncoder().encode(newValue) else { return }
+            UserDefaults.standard.set(encoded, forKey: Self.oauthConfigKey)
+        }
     }
 
     /// When true, Hermes is allowed to perform on-screen actions (computer-use)

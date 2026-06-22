@@ -115,6 +115,21 @@ Lets Clicky hear what's playing on the Mac (a call, tutorial, video) AND see the
   dropped once disabled, and a failed start rolls the toggle back. (`CompanionManager.swift`)
 - **OC-95 — Robust audio conversion (AVAudioConverter)** is tracked as a follow-up.
 
+### F6 — Sign in with ChatGPT (OAuth) (epic OC-11)
+
+- **OC-60 — Feasibility spike (go/no-go).** Riding a ChatGPT *subscription* from a third-party
+  app requires reusing a first-party client's OAuth credentials (the ones Codex CLI uses), which
+  OpenAI does not sanction for third-party use. Conclusion: **no-go on impersonation** — ship a
+  generic BYO-OAuth-app flow instead. Honest limit: yields OpenAI-compatible models, **not
+  Anthropic Opus** (Anthropic blocks subscription-based third-party access).
+- **OC-63 — OAuth 2.0 + PKCE sign-in.** New `OAuthSignInManager` runs the authorization-code +
+  PKCE flow via the native `ASWebAuthenticationSession`, stores access/refresh tokens in the
+  Keychain, and auto-refreshes near expiry. No credentials are hardcoded. (`OAuthSignInManager.swift` new)
+- **OC-67 — Provider wiring + fallback.** When signed in, the OAuth access token becomes the
+  Bearer for the active OpenAI-compatible provider (OpenRouter/OpenClaw/Hermes), falling back to
+  the pasted API key when signed out. Settings adds a sign-in section (client id + endpoints +
+  scopes). (`ProviderManager.swift`, `ProviderConfiguration.swift`, `SettingsView.swift`)
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)

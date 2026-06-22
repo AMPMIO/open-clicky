@@ -28,6 +28,13 @@ struct SettingsView: View {
     @State private var isCheckingHermes: Bool = false
     @State private var showPurgeConfirmation = false
     @State private var excludeAppInput = ""
+    @ObservedObject private var oauthManager = OAuthSignInManager.shared
+    @State private var oauthClientID = ""
+    @State private var oauthAuthorizeURL = ""
+    @State private var oauthTokenURL = ""
+    @State private var oauthScopes = ""
+    @State private var oauthSignInError: String?
+    @State private var isOAuthSigningIn = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -68,6 +75,8 @@ struct SettingsView: View {
             screenMemorySection
 
             liveCompanionSection
+
+            chatGPTSignInSection
 
             Spacer()
         }
@@ -456,6 +465,109 @@ struct SettingsView: View {
             Text("Lets Clicky hear calls/tutorials playing on your Mac so it can answer about them. Uses Screen Recording; system-audio transcription goes through your Worker (set OPENAI_API_KEY on the Worker).")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+    }
+
+    // MARK: - Sign in with ChatGPT (OAuth)
+
+    private var chatGPTSignInSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sign in with ChatGPT (experimental)")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            if oauthManager.isSignedIn {
+                HStack {
+                    Text("Signed in ✓")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Spacer()
+                    Button(action: { oauthManager.signOut(); providerManager.updateProvider() }) {
+                        Text("Sign out")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.warningText)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                oauthField("Client ID", text: $oauthClientID)
+                oauthField("Authorize URL", text: $oauthAuthorizeURL)
+                oauthField("Token URL", text: $oauthTokenURL)
+                oauthField("Scopes (space-separated)", text: $oauthScopes)
+                Button(action: signInWithOAuth) {
+                    Text(isOAuthSigningIn ? "Signing in…" : "Sign in")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.blue400)
+                }
+                .buttonStyle(.plain)
+                .disabled(isOAuthSigningIn)
+            }
+
+            if let oauthSignInError {
+                Text(oauthSignInError)
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.warningText)
+            }
+
+            Text("Uses your OWN OAuth app (BYO client id + endpoints) — OpenClicky ships no credentials and impersonates nothing. Yields OpenAI-compatible models, not Opus; point your active OpenAI-compatible provider's endpoint at the API your OAuth app authorizes. The token becomes the Bearer, falling back to your API key when signed out. Redirect URI: openclicky://oauth-callback")
+                .font(.system(size: 9))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .onAppear {
+            let config = providerManager.configuration.oauthConfig
+            oauthClientID = config.clientID
+            oauthAuthorizeURL = config.authorizeURL
+            oauthTokenURL = config.tokenURL
+            oauthScopes = config.scopes
+        }
+    }
+
+    private func oauthField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 10))
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface2))
+    }
+
+    /// HTTPS-only (or loopback) endpoint check, reusing the app-wide URL policy so
+    /// auth codes/tokens are never sent over plaintext remote HTTP.
+    private static func oauthEndpointIsSecure(_ urlString: String) -> Bool {
+        ProviderConfiguration.validatedURL(base: urlString, path: "") != nil
+    }
+
+    private func signInWithOAuth() {
+        guard !isOAuthSigningIn else { return }
+        var config = providerManager.configuration.oauthConfig
+        config.clientID = oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.authorizeURL = oauthAuthorizeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.tokenURL = oauthTokenURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.scopes = oauthScopes.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard config.isComplete else {
+            oauthSignInError = "Complete all OAuth fields before signing in."
+            return
+        }
+        guard Self.oauthEndpointIsSecure(config.authorizeURL) else {
+            oauthSignInError = "Authorize URL must be HTTPS (or localhost)."
+            return
+        }
+        guard Self.oauthEndpointIsSecure(config.tokenURL) else {
+            oauthSignInError = "Token URL must be HTTPS (or localhost)."
+            return
+        }
+
+        providerManager.configuration.oauthConfig = config
+        oauthSignInError = nil
+        isOAuthSigningIn = true
+        Task { @MainActor in
+            defer { isOAuthSigningIn = false }
+            do {
+                try await oauthManager.signIn(config: config)
+                providerManager.updateProvider()
+            } catch {
+                oauthSignInError = error.localizedDescription
+            }
         }
     }
 
