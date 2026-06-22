@@ -50,17 +50,13 @@ enum TerminalAgentBridgeError: LocalizedError {
 
 enum TerminalAgentBridge {
 
-    /// Returns a running, supported terminal app — preferring the frontmost one
-    /// so "send this to Claude Code" targets the terminal the user is looking at.
+    /// The supported terminal that is CURRENTLY FRONTMOST, or nil. Deliberately
+    /// fails closed (no fallback to "some running terminal") so a dispatch can only
+    /// target the terminal the user is actually looking at — never a background
+    /// shell, SSH session, or different app.
     static func targetTerminal() -> TerminalApp? {
-        let running = NSWorkspace.shared.runningApplications
-        if let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-           let match = TerminalApp.allCases.first(where: { $0.bundleIdentifier == front }) {
-            return match
-        }
-        return TerminalApp.allCases.first { app in
-            running.contains { $0.bundleIdentifier == app.bundleIdentifier }
-        }
+        guard let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
+        return TerminalApp.allCases.first { $0.bundleIdentifier == front }
     }
 
     /// Activates `terminal` and pastes `prompt` + Return into its focused session.
@@ -69,10 +65,17 @@ enum TerminalAgentBridge {
     static func sendPrompt(_ prompt: String, to terminal: TerminalApp) throws {
         guard AXIsProcessTrusted() else { throw TerminalAgentBridgeError.permissionDenied }
 
+        // Re-verify the SAME terminal is still frontmost right before we paste, so
+        // we never inject into a window that took focus after the proposal.
+        guard targetTerminal() == terminal else {
+            throw TerminalAgentBridgeError.noRunningTerminal
+        }
+
         let pasteboard = NSPasteboard.general
         let savedItems = snapshotPasteboard(pasteboard) // preserve ALL clipboard items (text/image/files)
         pasteboard.clearContents()
         pasteboard.setString(prompt, forType: .string)
+        let promptChangeCount = pasteboard.changeCount
 
         let script = """
         tell application "\(terminal.rawValue)" to activate
@@ -86,13 +89,14 @@ enum TerminalAgentBridge {
         do {
             try runAppleScript(script)
         } catch {
-            restorePasteboard(savedItems)
+            restorePasteboard(savedItems, ifChangeCountEquals: promptChangeCount)
             throw error
         }
 
-        // Restore the user's full clipboard after the paste has been consumed.
+        // Restore the user's full clipboard after the paste has been consumed —
+        // but only if nothing else has touched the clipboard since our write.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            restorePasteboard(savedItems)
+            restorePasteboard(savedItems, ifChangeCountEquals: promptChangeCount)
         }
     }
 
@@ -135,17 +139,23 @@ enum TerminalAgentBridge {
         }
     }
 
-    private static func restorePasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]]) {
-        let nonEmpty = snapshot.filter { !$0.isEmpty }
-        guard !nonEmpty.isEmpty else { return }
+    /// Restores the snapshot only if the clipboard hasn't changed since our prompt
+    /// write (so we never clobber something the user copied in the meantime). When
+    /// the original clipboard was empty we still clear ours off — never leave the
+    /// prompt behind.
+    private static func restorePasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]], ifChangeCountEquals expected: Int) {
         let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let items: [NSPasteboardItem] = nonEmpty.map { representation in
+        guard pasteboard.changeCount == expected else { return }
+        pasteboard.clearContents() // removes our prompt
+        let items: [NSPasteboardItem] = snapshot.compactMap { representation in
+            guard !representation.isEmpty else { return nil }
             let item = NSPasteboardItem()
             for (type, data) in representation { item.setData(data, forType: type) }
             return item
         }
-        pasteboard.writeObjects(items)
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
+        }
     }
 
     private static func runAppleScript(_ source: String) throws {

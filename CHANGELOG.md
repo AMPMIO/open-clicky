@@ -53,6 +53,14 @@ Voice → dispatch a request into a running terminal coding agent (e.g. a Claude
 - **OC-85 — Stale-action revalidation (TOCTOU).** Pending clicks capture the frontmost app +
   timestamp and are refused at execution if the app changed or the proposal is stale (>30s;
   terminal dispatch >60s).
+- **OC-86 — Terminal dispatch fails closed to the frontmost terminal (Codex F7).**
+  `targetTerminal()` only returns the frontmost supported terminal (no fallback), and
+  `sendPrompt` re-verifies it's still frontmost immediately before pasting — so a prompt can't
+  land in a background shell/SSH/tab. (`TerminalAgentBridge.swift`)
+- **OC-87 — Transactional clipboard restore (Codex F7).** Restore is gated on
+  `pasteboard.changeCount` (never clobbers what the user copied during the paste window) and
+  always clears our prompt even when the original clipboard was empty (no leak).
+  (`TerminalAgentBridge.swift`)
 
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 

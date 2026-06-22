@@ -857,7 +857,7 @@ final class CompanionManager: ObservableObject {
                             print("⌨️ Terminal bridge: pending dispatch to \(terminal.displayName)")
                         } else {
                             spokenText += spokenText.isEmpty ? "" : " "
-                            spokenText += "i don't see a terminal open to send that to."
+                            spokenText += "focus the terminal you want me to send it to first, then ask again."
                         }
                     }
                 }
