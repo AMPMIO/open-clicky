@@ -85,17 +85,32 @@ struct ProviderConfiguration {
         UserDefaults.standard.string(forKey: workerBaseURLKey) ?? defaultWorkerBaseURL
     }
 
-    /// Worker base URL with any trailing slash removed so route paths append
-    /// cleanly (avoids `host//tts`, which the Worker route switch won't match).
-    static var normalizedWorkerBaseURL: String {
-        let base = workerBaseURLFromDefaults.trimmingCharacters(in: .whitespacesAndNewlines)
-        return base.hasSuffix("/") ? String(base.dropLast()) : base
+    /// Single endpoint-URL policy used everywhere (chat, TTS, transcription, and
+    /// the agent providers): trims a trailing slash, allows only http/https, and
+    /// permits cleartext http ONLY for true loopback. Returns nil for malformed
+    /// or non-loopback-cleartext URLs so callers fail closed.
+    static func validatedURL(base: String, path: String) -> URL? {
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let normalized = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        guard let url = URL(string: normalized + path),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host, !host.isEmpty else { return nil }
+        switch scheme {
+        case "https":
+            return url
+        case "http":
+            let lowerHost = host.lowercased()
+            return (lowerHost == "localhost" || lowerHost == "127.0.0.1" || lowerHost == "::1") ? url : nil
+        default:
+            return nil
+        }
     }
 
-    /// Full URL string for a Worker route (e.g. "/tts", "/transcribe-token").
-    /// Single builder shared by chat, TTS, and transcription.
-    static func workerRouteURLString(_ path: String) -> String {
-        normalizedWorkerBaseURL + path
+    /// Validated URL for a Worker route (e.g. "/chat", "/tts", "/transcribe-token"),
+    /// or nil if the configured Worker URL is malformed or non-loopback cleartext.
+    static func workerRouteURL(_ path: String) -> URL? {
+        validatedURL(base: workerBaseURLFromDefaults, path: path)
     }
 
     // MARK: - Properties

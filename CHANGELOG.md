@@ -175,6 +175,12 @@ agent-mode gap vs the commercial HeyClicky using the user's own agent.
 - **OC-79 — SSE requires content for success.** `chatStreaming` now requires at least one
   parsed content chunk; a bare `[DONE]` / contentless stream throws `invalidResponseFormat`
   instead of reporting empty success. (`OpenAICompatibleProvider.swift`)
+- **OC-80 — Centralized cleartext policy across ALL Worker routes (security).** The
+  loopback-only-cleartext rule was only on the chat path; TTS + transcription built URLs by
+  raw concatenation. Now there's one `ProviderConfiguration.validatedURL` policy used by chat
+  (`ProviderManager.sanitizedURL`), TTS, and transcription — and TTS/transcription fail closed
+  (skip rather than POST) when the Worker URL is non-loopback cleartext or malformed.
+  (`ProviderConfiguration.swift`, `ProviderManager.swift`, `CompanionManager.swift`, `AssemblyAIStreamingTranscriptionProvider.swift`)
 
 ## [Unreleased] - OpenRouter + OpenClaw Integration
 

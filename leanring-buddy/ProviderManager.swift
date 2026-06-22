@@ -136,26 +136,10 @@ class ProviderManager: ObservableObject {
     /// trailing slash on the base so we never produce `host//path`, and returns
     /// nil for malformed input instead of force-unwrapping `URL(string:)` (which
     /// crashes the app on bad Settings input).
+    /// Centralized in ProviderConfiguration.validatedURL so chat, TTS, and
+    /// transcription all enforce the same loopback-only-cleartext policy.
     private static func sanitizedURL(_ base: String, path: String) -> URL? {
-        let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBase.isEmpty else { return nil }
-        let normalizedBase = trimmedBase.hasSuffix("/") ? String(trimmedBase.dropLast()) : trimmedBase
-        guard let url = URL(string: normalizedBase + path),
-              let scheme = url.scheme?.lowercased(),
-              let host = url.host, !host.isEmpty else { return nil }
-        // Only http/https. Cleartext http is allowed ONLY for true loopback — a
-        // `.local`/mDNS or LAN host can resolve to another machine, so sending the
-        // bearer token + screenshots there in plaintext is unsafe. Those must use https.
-        switch scheme {
-        case "https":
-            return url
-        case "http":
-            let lowerHost = host.lowercased()
-            let isLoopback = lowerHost == "localhost" || lowerHost == "127.0.0.1" || lowerHost == "::1"
-            return isLoopback ? url : nil
-        default:
-            return nil
-        }
+        ProviderConfiguration.validatedURL(base: base, path: path)
     }
 }
 

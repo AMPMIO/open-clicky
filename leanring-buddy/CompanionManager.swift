@@ -74,7 +74,11 @@ final class CompanionManager: ObservableObject {
     /// TTS proxy reads the configured Worker base URL (single source of truth in
     /// ProviderConfiguration) so the Settings "Worker URL" field reaches TTS too.
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: ProviderConfiguration.workerRouteURLString("/tts"))
+        // Seed with the validated route if available, else the (https) placeholder;
+        // the URL is re-validated and refreshed before every speak (see below).
+        let seed = ProviderConfiguration.workerRouteURL("/tts")?.absoluteString
+            ?? "\(ProviderConfiguration.defaultWorkerBaseURL)/tts"
+        return ElevenLabsTTSClient(proxyURL: seed)
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -752,16 +756,21 @@ final class CompanionManager: ObservableObject {
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        // Refresh the TTS endpoint in case the Worker URL changed in Settings.
-                        elevenLabsTTSClient.updateProxyURL(ProviderConfiguration.workerRouteURLString("/tts"))
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                    if let ttsURL = ProviderConfiguration.workerRouteURL("/tts") {
+                        do {
+                            // Refresh the TTS endpoint in case the Worker URL changed in Settings.
+                            elevenLabsTTSClient.updateProxyURL(ttsURL.absoluteString)
+                            try await elevenLabsTTSClient.speakText(spokenText)
+                            // speakText returns after player.play() — audio is now playing
+                            voiceState = .responding
+                        } catch {
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            speakCreditsErrorFallback()
+                        }
+                    } else {
+                        // Fail closed: never POST TTS text to a non-loopback cleartext Worker URL.
+                        print("⚠️ TTS skipped: Worker URL is not a valid loopback/https endpoint")
                     }
                 }
             } catch is CancellationError {

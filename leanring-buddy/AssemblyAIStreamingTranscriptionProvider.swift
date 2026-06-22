@@ -17,14 +17,6 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 }
 
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
-    /// URL for the Cloudflare Worker endpoint that returns a short-lived
-    /// AssemblyAI streaming token. The real API key never leaves the server.
-    /// Reads the configured Worker base URL (single source of truth in
-    /// ProviderConfiguration) so it tracks the Settings "Worker URL" field.
-    private static var tokenProxyURL: String {
-        ProviderConfiguration.workerRouteURLString("/transcribe-token")
-    }
-
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
 
@@ -63,9 +55,11 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
     private func fetchTemporaryToken() async throws -> String {
-        guard let tokenURL = URL(string: Self.tokenProxyURL) else {
+        // Validated Worker route URL (rejects non-loopback cleartext) so the
+        // token request never leaks over plaintext to a LAN host.
+        guard let tokenURL = ProviderConfiguration.workerRouteURL("/transcribe-token") else {
             throw NSError(domain: "AssemblyAI", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "Invalid Worker token URL"])
+                          userInfo: [NSLocalizedDescriptionKey: "Worker URL is not a valid loopback/https endpoint"])
         }
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
