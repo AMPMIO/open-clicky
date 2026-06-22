@@ -11,6 +11,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var providerManager: ProviderManager
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var screenMemory = ScreenMemoryStore.shared
     @State private var openRouterKeyInput: String = ""
     @State private var openClawTokenInput: String = ""
     @State private var openClawEndpointInput: String = ""
@@ -25,6 +26,7 @@ struct SettingsView: View {
     @State private var hermesActionMode: Bool = false
     @State private var hermesReadinessResult: String?
     @State private var isCheckingHermes: Bool = false
+    @State private var showPurgeConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -61,6 +63,8 @@ struct SettingsView: View {
             handsOnSection
 
             terminalBridgeSection
+
+            screenMemorySection
 
             Spacer()
         }
@@ -358,6 +362,42 @@ struct SettingsView: View {
             Text("Dispatch a spoken request to a running terminal agent (Terminal/iTerm/Ghostty) after you confirm. Needs Accessibility + Automation permission.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+    }
+
+    // MARK: - Screen Memory
+
+    private var screenMemorySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { screenMemory.isEnabled },
+                set: { screenMemory.setEnabled($0) }
+            )) {
+                Text("Screen Memory (local recall)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            Text("Remembers what you've shown Clicky so you can ask about it later. Stored encrypted, on-device only.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if screenMemory.isEnabled && screenMemory.entryCount > 0 {
+                Button(action: { showPurgeConfirmation = true }) {
+                    Text("Clear \(screenMemory.entryCount) saved moment\(screenMemory.entryCount == 1 ? "" : "s")")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.warningText)
+                }
+                .buttonStyle(.plain)
+                .alert("Clear all screen memory?", isPresented: $showPurgeConfirmation) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Clear All", role: .destructive) { screenMemory.purge() }
+                } message: {
+                    Text("This permanently deletes all saved moments. This can't be undone.")
+                }
+            }
         }
     }
 

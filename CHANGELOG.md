@@ -62,6 +62,21 @@ Voice → dispatch a request into a running terminal coding agent (e.g. a Claude
   always clears our prompt even when the original clipboard was empty (no leak).
   (`TerminalAgentBridge.swift`)
 
+### F2 — Screen Memory (epic OC-7)
+
+On-device, opt-in recall of what Clicky has seen — answer "what was that … earlier?" by voice.
+
+- **OC-43 — Encrypted local store.** New `ScreenMemoryStore` persists each turn (cursor
+  screenshot + transcript + reply) under Application Support, encrypted with AES-GCM (CryptoKit)
+  using a Keychain-held key; capped at 500 entries. (`ScreenMemoryStore.swift` new)
+- **OC-48 — On-device OCR + embeddings.** Vision `VNRecognizeTextRequest` OCRs each screenshot
+  and `NLEmbedding` embeds transcript+OCR for semantic recall (keyword-overlap fallback). All local.
+- **OC-51 — Voice recall → inject.** A recall-style question (`isRecallQuery`) retrieves the
+  top-k past moments by cosine similarity and injects their screenshots as extra vision context.
+  (`CompanionManager.swift`) *(Pointing back at a past-moment thumbnail is a follow-up.)*
+- **OC-54 — Privacy controls.** Off by default; Settings toggle, per-app exclude list, pause,
+  and a one-tap purge of all saved moments. (`SettingsView.swift`, `ScreenMemoryStore.swift`)
+
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 
 ### E1 — Stabilize: make it build & the providers actually work (epic OC-1)

@@ -724,8 +724,20 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // Screen Memory: if this looks like a recall question, retrieve the
+                // most relevant past moments and add their screenshots as context.
+                var images = labeledImages
+                if ScreenMemoryStore.shared.isEnabled, Self.isRecallQuery(transcript) {
+                    let recalls = await ScreenMemoryStore.shared.recall(query: transcript)
+                    for recall in recalls {
+                        let appSuffix = recall.entry.appName.map { " in \($0)" } ?? ""
+                        images.append((data: recall.imageData, label: "a past screen you saw earlier\(appSuffix)"))
+                    }
+                    if !recalls.isEmpty { print("🧠 Screen Memory: injected \(recalls.count) past moment(s)") }
+                }
+
                 let (fullResponseText, _) = try await providerManager.currentProvider.chatStreaming(
-                    images: labeledImages,
+                    images: images,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt
                         + Self.activeAppGuidanceAddendum()
                         + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : "")
@@ -860,6 +872,17 @@ final class CompanionManager: ObservableObject {
                             spokenText += "focus the terminal you want me to send it to first, then ask again."
                         }
                     }
+                }
+
+                // Screen Memory: record this turn (cursor screen + transcript + reply)
+                // for later recall. No-op unless enabled; stored encrypted on-device.
+                if let cursorCapture = screenCaptures.first(where: { $0.isCursorScreen }) {
+                    ScreenMemoryStore.shared.recordTurn(
+                        imageData: cursorCapture.imageData,
+                        transcript: transcript,
+                        reply: spokenText,
+                        appName: NSWorkspace.shared.frontmostApplication?.localizedName
+                    )
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -1009,6 +1032,15 @@ final class CompanionManager: ObservableObject {
     static func isDestructiveActionLabel(_ label: String) -> Bool {
         let lowered = label.lowercased()
         return destructiveActionKeywords.contains { lowered.contains($0) }
+    }
+
+    /// Heuristic: does this utterance look like a recall question about something
+    /// seen earlier (Screen Memory) rather than the current screen?
+    static func isRecallQuery(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let cues = ["what was", "what were", "what did", "earlier", "remember",
+                    "you saw", "i saw", "pull up", "a while ago", "last time", "recall"]
+        return cues.contains { lowered.contains($0) }
     }
 
     // MARK: - Hands-On Confirmation
