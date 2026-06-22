@@ -1,152 +1,126 @@
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
+# OpenClicky
 
-Download it [here](https://www.clicky.so/) for free.
+OpenClicky is a fork of [Clicky](https://github.com/farzaa/clicky) — the AI buddy that lives
+next to your cursor, sees your screen, talks to you, and points at things — **rebuilt to run on
+any model and on your own agent**, with new hands-on capabilities.
 
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
+It keeps everything the original does (menu-bar app, push-to-talk, screenshots → vision model,
+spoken replies, the blue cursor that flies to `[POINT:x,y]` elements across monitors, Cloudflare
+Worker proxy) and adds the upgrades below.
 
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
+> Status: the multi-provider + Hermes + stabilization work (below) is reviewed and on the
+> `feature/opus-upgrade-e1-e5` branch. The new capability features are a follow-up wave on
+> `feature/opus-features-f1-f7`. Everything is built for Xcode — run it there (don't
+> `xcodebuild` from the terminal; it resets macOS TCC permissions).
 
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
+## What this fork adds
 
-## Get started with Claude Code
+### 🔌 Bring your own model — multi-provider LLM layer
+The original is Claude-only through the Worker. OpenClicky adds a provider abstraction
+(`LLMProvider` + `ProviderManager`) with a Settings UI to pick a backend:
 
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+- **Worker Proxy** — Claude via the Cloudflare Worker (keys stay server-side, like upstream).
+- **OpenRouter** — bring your own key, use essentially any frontier model.
+- **OpenClaw** — route to a self-hosted OpenAI-compatible agent.
+- **Hermes** — route to your own **[Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent)** (see below).
 
-Once you get Claude running, paste this:
+Provider credentials live in the macOS Keychain; each provider remembers its own model.
 
-```
-Hi Claude.
+### 🤖 Nous Hermes Agent integration (the headline)
+Point OpenClicky at *your own* Hermes agent — local, a self-hosted VPS, or the Nous
+subscription — so the thing answering (and, optionally, doing the work) in the background is
+**your agent**, not a hosted LLM. It reuses the OpenAI-compatible client (`/v1/chat/completions`,
+Bearer token, SSE, image vision), with a **Readiness Check** that verifies vision passthrough,
+`[POINT:]`-tag preservation, and system-prompt honoring against your instance.
 
-Clone https://github.com/farzaa/clicky.git into my current directory.
+### 🔒 Security & stabilization
+The fork's provider work was hardened via adversarial review:
+- Fixed a build break and a broken OpenClaw endpoint; safe fresh-install defaults (no screen
+  capture before a provider is configured).
+- App Transport Security: cleartext only to true loopback; remote/`.local` agent endpoints must
+  use HTTPS — so your token + screenshots never go over plaintext.
+- Agent backends require an explicit token before they're "ready"; the Worker's unauthenticated
+  spend route was removed; SSE failures surface instead of returning empty "success".
 
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
+### ✋ New capability features (follow-up wave)
+- **Hands-On Mode** — after you confirm by voice, Clicky can *click* an element (macOS
+  Accessibility), not just point. Exact-phrase confirmation, a destructive-action denylist, and
+  stale-target checks gate every action.
+- **Terminal Agent Bridge** — say what you want and Clicky pastes it into your running
+  **Claude Code** terminal session (Terminal/iTerm/Ghostty), after you confirm.
+- **Screen Memory** — opt-in, on-device, **encrypted** recall: ask "what was that license key I
+  saw earlier?" and it answers from past screens (Vision OCR + NLEmbedding, all local).
+- **Live Companion** — captures system audio so Clicky can hear a call/tutorial *and* see the
+  screen, to answer "what did they just ask?" or summarize the last few minutes.
 
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
+All new features are **off by default** and opt-in from Settings.
 
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
+## Get started
 
-## Manual setup
-
-If you want to do it yourself, here's the deal.
+The fastest path is still [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — clone
+this repo, read `CLAUDE.md`, and have it walk you through the Worker + Xcode setup.
 
 ### Prerequisites
+- macOS 14.2+ (ScreenCaptureKit), Xcode 15+, Node.js 18+ (for the Worker)
+- A [Cloudflare](https://cloudflare.com) account (free tier) for Worker mode, **and/or** just an
+  [OpenRouter](https://openrouter.ai) key / a Hermes / OpenClaw endpoint for the other providers
+- For voice: [AssemblyAI](https://www.assemblyai.com) (STT) and [ElevenLabs](https://elevenlabs.io) (TTS) keys on the Worker
 
-- macOS 14.2+ (for ScreenCaptureKit)
-- Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
-
-### 1. Set up the Cloudflare Worker
-
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
-
+### 1. Cloudflare Worker (for Worker-proxy mode + voice)
 ```bash
 cd worker
 npm install
-```
-
-Now add your secrets. Wrangler will prompt you to paste each one:
-
-```bash
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
+Set the ElevenLabs voice id in `wrangler.toml` under `[vars]`, then `npx wrangler deploy`. It
+gives you a URL like `https://your-worker-name.your-subdomain.workers.dev`.
 
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
+The Worker now serves three routes — `/chat`, `/tts`, `/transcribe-token`. (The old
+`/chat-openrouter` route was removed; OpenRouter mode is client-side BYO-key.)
 
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-```
-
-Deploy it:
-
-```bash
-npx wrangler deploy
-```
-
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
-
-### 3. Update the proxy URLs in the app
-
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
-
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
-
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
-
-### 4. Open in Xcode and run
-
+### 2. Open in Xcode and run
 ```bash
 open leanring-buddy.xcodeproj
 ```
+Select the `leanring-buddy` scheme (the typo is intentional/legacy), set your signing team, and
+**Cmd + R**. The app lives in the menu bar.
 
-In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
-2. Set your signing team under Signing & Capabilities
-3. Hit **Cmd + R** to build and run
+### 3. Configure a provider in Settings
+Open the panel → gear icon → **Settings**:
+- **Worker Proxy:** paste your Worker URL (it now feeds chat, TTS, and transcription).
+- **OpenRouter:** paste your key and pick a model.
+- **OpenClaw / Hermes:** paste the endpoint + bearer token (remote endpoints must be HTTPS); run
+  the Hermes **Readiness Check** to confirm pointing will work.
 
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
-
-### Permissions the app needs
-
-- **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
-- **Screen Content** — for ScreenCaptureKit access
+### Permissions
+- **Microphone** — push-to-talk · **Accessibility** — global shortcut + Hands-On clicking
+- **Screen Recording / Screen Content** — screenshots + (Live Companion) system audio
+- **Automation** — only if you use the Terminal Agent Bridge
 
 ## Architecture
-
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
-
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+Read `CLAUDE.md` for the full breakdown. Short version: menu-bar app, push-to-talk → screenshot →
+the **selected provider** (Claude/OpenRouter/OpenClaw/Hermes) via streaming SSE → ElevenLabs TTS,
+with `[POINT:x,y:label:screenN]` tags driving the cursor, and new `[ACT:...]` / `[RUN:...]` tags
+driving confirmed actions. See `CHANGELOG.md` for the full list of changes in this fork.
 
 ## Project structure
-
 ```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+leanring-buddy/               # Swift source
+  CompanionManager.swift         # Central state machine + pipeline
+  LLMProvider / ProviderManager / ProviderConfiguration / *Provider.swift   # Multi-provider layer
+  SettingsView.swift             # Provider + feature configuration UI
+  AccessibilityActuator.swift    # Hands-On Mode clicking
+  TerminalAgentBridge.swift      # Drive a terminal agent by voice
+  ScreenMemoryStore.swift        # Encrypted on-device recall
+  SystemAudioCaptureService.swift# Live Companion system audio
+  OverlayWindow.swift            # Blue cursor overlay
+worker/src/index.ts            # Cloudflare Worker proxy (/chat, /tts, /transcribe-token)
+CLAUDE.md / CHANGELOG.md       # Architecture doc + change log
 ```
 
-## Contributing
-
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+## Credits
+Built on [Clicky](https://github.com/farzaa/clicky) by [@farzatv](https://x.com/farzatv) (MIT).
+This fork adds the multi-provider layer, Hermes integration, security hardening, and the new
+hands-on features.
