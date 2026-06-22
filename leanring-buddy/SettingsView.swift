@@ -27,6 +27,7 @@ struct SettingsView: View {
     @State private var hermesReadinessResult: String?
     @State private var isCheckingHermes: Bool = false
     @State private var showPurgeConfirmation = false
+    @State private var excludeAppInput = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -385,6 +386,40 @@ struct SettingsView: View {
             Text("Remembers what you've shown Clicky so you can ask about it later. Stored encrypted, on-device only.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
+
+            if screenMemory.isEnabled {
+                Toggle(isOn: Binding(
+                    get: { screenMemory.isPaused },
+                    set: { screenMemory.setPaused($0) }
+                )) {
+                    Text("Pause recording")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
+                HStack(spacing: 6) {
+                    TextField("Exclude an app by name…", text: $excludeAppInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10))
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface2))
+                    Button("Add") {
+                        let name = excludeAppInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !name.isEmpty { screenMemory.excludeApp(name); excludeAppInput = "" }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.blue400)
+                }
+
+                if !screenMemory.excludedApps.isEmpty {
+                    Text("Never recorded: \(screenMemory.excludedApps.sorted().joined(separator: ", "))")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
 
             if screenMemory.isEnabled && screenMemory.entryCount > 0 {
                 Button(action: { showPurgeConfirmation = true }) {

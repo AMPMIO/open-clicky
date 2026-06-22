@@ -77,7 +77,17 @@ On-device, opt-in recall of what Clicky has seen — answer "what was that … e
 - **OC-54 — Privacy controls.** Off by default; Settings toggle, per-app exclude list, pause,
   and a one-tap purge of all saved moments. (`SettingsView.swift`, `ScreenMemoryStore.swift`)
 
-### F4 — Live Companion (epic OC-9)
+#### F2 privacy hardening — Codex review follow-ups (OC-88–91)
+
+- **OC-88 — Recall relevance threshold.** Past screenshots are only injected above a similarity
+  threshold, so an ordinary current-screen question can't attach unrelated old screens.
+- **OC-89 — In-flight recording respects controls.** A generation token captured at record time
+  is re-validated (plus enabled/paused) before persisting, so a disable/pause/purge cancels
+  recordings still mid-OCR. (`ScreenMemoryStore.swift`)
+- **OC-90 — Pause + per-app exclude UI.** The Settings section now actually exposes a pause
+  toggle and an add-app-to-exclude control with the current exclude list. (`SettingsView.swift`)
+- **OC-91 — Persistence fails closed + sweeps orphans.** If the Keychain key can't be persisted,
+  nothing is written (no undecryptable data); orphaned `.enc` images are swept on launch.
 
 Lets Clicky hear what's playing on the Mac (a call, tutorial, video) AND see the screen.
 
