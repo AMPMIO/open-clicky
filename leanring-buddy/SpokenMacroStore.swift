@@ -54,7 +54,7 @@ final class SpokenMacroStore: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
         do {
             macros = try JSONDecoder().decode([SpokenMacro].self, from: data)
-            ClickyTelemetry.spokenMacros.info("load macros macroCount=\(macros.count, privacy: .public)")
+            ClickyTelemetry.spokenMacros.info("load macros macroCount=\(self.macros.count, privacy: .public)")
         } catch {
             ClickyTelemetry.spokenMacros.error("load decode failed: \(error.localizedDescription, privacy: .public)")
         }

@@ -570,8 +570,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             // (and its websocket) until a later retry.
             inputNode.removeTap(onBus: 0)
             sessionForAudioTap.cancel()
-            if activeTranscriptionSession === sessionForAudioTap {
-                activeTranscriptionSession = nil
+            // Clear the PROPERTY (the local `activeTranscriptionSession` shadows it
+            // in this scope) so a failed start doesn't leave a stale session retained.
+            if self.activeTranscriptionSession === sessionForAudioTap {
+                self.activeTranscriptionSession = nil
             }
             throw error
         }
