@@ -15,6 +15,7 @@
 //
 
 import AppKit
+import os
 import ApplicationServices
 
 enum AccessibilityActuatorError: LocalizedError {

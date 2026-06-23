@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import os
 import CoreGraphics
 import Foundation
 import Vision

@@ -10,6 +10,7 @@
 //
 
 import AVFoundation
+import os
 import Combine
 import Foundation
 import ScreenCaptureKit

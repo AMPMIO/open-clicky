@@ -10,6 +10,7 @@
 //
 
 import AppKit
+import os
 import Combine
 import CryptoKit
 import Foundation

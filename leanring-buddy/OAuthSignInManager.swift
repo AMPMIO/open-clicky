@@ -16,6 +16,7 @@
 //
 
 import AppKit
+import os
 import AuthenticationServices
 import Combine
 import CryptoKit

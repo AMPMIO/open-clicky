@@ -13,6 +13,7 @@
 //
 
 import Combine
+import os
 import Foundation
 
 struct SpokenMacro: Codable, Identifiable, Equatable {

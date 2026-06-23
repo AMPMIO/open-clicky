@@ -13,6 +13,7 @@
 //
 
 import AppKit
+import os
 import Foundation
 
 enum TerminalApp: String, CaseIterable {
