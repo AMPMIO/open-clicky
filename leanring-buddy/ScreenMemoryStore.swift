@@ -65,6 +65,7 @@ final class ScreenMemoryStore: ObservableObject {
         indexURL = directory.appendingPathComponent("index.enc")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         loadIndex()
+        ClickyTelemetry.screenMemory.info("init isEnabled=\(self.isEnabled, privacy: .public) entryCount=\(self.entries.count, privacy: .public)")
         sweepOrphans()
     }
 
@@ -76,9 +77,12 @@ final class ScreenMemoryStore: ObservableObject {
         guard indexLoaded else { return }
         let referenced = Set(entries.map { $0.imageFileName })
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        var sweptOrphanCount = 0
         for file in files where file.hasSuffix(".enc") && file != "index.enc" && !referenced.contains(file) {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
+            sweptOrphanCount += 1
         }
+        ClickyTelemetry.screenMemory.info("sweepOrphans swept=\(sweptOrphanCount, privacy: .public)")
     }
 
     // MARK: - Controls
@@ -161,10 +165,14 @@ final class ScreenMemoryStore: ObservableObject {
         // Only return genuinely-relevant moments, so an ordinary current-screen
         // question never attaches unrelated old screenshots.
         let top = scored.sorted { $0.1 > $1.1 }.prefix(topK).filter { $0.1 >= minScore }
-        return top.compactMap { (entry, _) in
+        let recalls = top.compactMap { (entry, _) -> ScreenMemoryRecall? in
             guard let data = decryptImage(named: entry.imageFileName) else { return nil }
             return ScreenMemoryRecall(entry: entry, imageData: data)
         }
+        // Counts/score only — never the query or any stored transcript/reply/OCR text.
+        let topScore = top.first?.1 ?? 0
+        ClickyTelemetry.screenMemory.info("recall injected \(recalls.count, privacy: .public) moments topScore=\(topScore, privacy: .public)")
+        return recalls
     }
 
     // MARK: - Persistence
@@ -172,25 +180,41 @@ final class ScreenMemoryStore: ObservableObject {
     private func persist(entry: ScreenMemoryEntry, imageData: Data, capturedGeneration: Int) {
         // Re-validate on the MainActor: the user may have disabled / paused / purged
         // (or excluded this app) while we were OCR'ing + embedding. If so, drop it.
-        guard capturedGeneration == generation, isEnabled, !isPaused else { return }
-        if let appName = entry.appName, excludedApps.contains(appName.lowercased()) { return }
-        guard let sealed = try? encrypt(imageData) else { return }
+        guard capturedGeneration == generation, isEnabled, !isPaused else {
+            let generationChanged = capturedGeneration != generation
+            ClickyTelemetry.screenMemory.notice("persist dropped on re-validation generationChanged=\(generationChanged, privacy: .public) isEnabled=\(self.isEnabled, privacy: .public) isPaused=\(self.isPaused, privacy: .public)")
+            return
+        }
+        if let appName = entry.appName, excludedApps.contains(appName.lowercased()) {
+            ClickyTelemetry.screenMemory.notice("persist dropped on re-validation excludedApp=\(true, privacy: .public)")
+            return
+        }
+        guard let sealed = try? encrypt(imageData) else {
+            ClickyTelemetry.screenMemory.error("persist encrypt failed — moment not stored")
+            return
+        }
         try? sealed.write(to: directory.appendingPathComponent(entry.imageFileName), options: .atomic)
         entries.append(entry)
+        var evictedOverMaxCount = 0
         if entries.count > maxEntries {
             let overflow = entries.prefix(entries.count - maxEntries)
             for old in overflow {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent(old.imageFileName))
             }
+            evictedOverMaxCount = entries.count - maxEntries
             entries.removeFirst(entries.count - maxEntries)
         }
+        ClickyTelemetry.screenMemory.info("persist stored entryCount=\(self.entries.count, privacy: .public) evictedOverMax=\(evictedOverMaxCount, privacy: .public)")
         saveIndex()
     }
 
     private func loadIndex() {
-        guard let encrypted = try? Data(contentsOf: indexURL),
-              let decrypted = try? decrypt(encrypted),
+        // A missing index on first launch is normal, not a failure — only flag a
+        // present-but-unreadable index (decrypt/decode failure) as an error.
+        guard let encrypted = try? Data(contentsOf: indexURL) else { return }
+        guard let decrypted = try? decrypt(encrypted),
               let decoded = try? JSONDecoder().decode([ScreenMemoryEntry].self, from: decrypted) else {
+            ClickyTelemetry.screenMemory.error("loadIndex failed to decrypt/decode index bytes=\(encrypted.count, privacy: .public)")
             return
         }
         entries = decoded
@@ -199,8 +223,15 @@ final class ScreenMemoryStore: ObservableObject {
 
     private func saveIndex() {
         guard let data = try? JSONEncoder().encode(entries),
-              let encrypted = try? encrypt(data) else { return }
-        try? encrypted.write(to: indexURL, options: .atomic)
+              let encrypted = try? encrypt(data) else {
+            ClickyTelemetry.screenMemory.error("saveIndex failed to encode/encrypt entryCount=\(self.entries.count, privacy: .public)")
+            return
+        }
+        do {
+            try encrypted.write(to: indexURL, options: .atomic)
+        } catch {
+            ClickyTelemetry.screenMemory.error("saveIndex failed to write index bytes=\(encrypted.count, privacy: .public)")
+        }
     }
 
     private func decryptImage(named name: String) -> Data? {
@@ -211,12 +242,18 @@ final class ScreenMemoryStore: ObservableObject {
     // MARK: - Encryption (AES-GCM, key in Keychain)
 
     private func encrypt(_ data: Data) throws -> Data {
-        guard let key = Self.encryptionKey() else { throw CocoaError(.coderInvalidValue) }
+        guard let key = Self.encryptionKey() else {
+            ClickyTelemetry.screenMemory.error("encrypt failed — no encryption key available bytes=\(data.count, privacy: .public)")
+            throw CocoaError(.coderInvalidValue)
+        }
         return try AES.GCM.seal(data, using: key).combined ?? Data()
     }
 
     private func decrypt(_ data: Data) throws -> Data {
-        guard let key = Self.encryptionKey() else { throw CocoaError(.coderInvalidValue) }
+        guard let key = Self.encryptionKey() else {
+            ClickyTelemetry.screenMemory.error("decrypt failed — no encryption key available bytes=\(data.count, privacy: .public)")
+            throw CocoaError(.coderInvalidValue)
+        }
         let box = try AES.GCM.SealedBox(combined: data)
         return try AES.GCM.open(box, using: key)
     }
@@ -244,12 +281,13 @@ final class ScreenMemoryStore: ObservableObject {
         let status = SecItemAdd(addQuery as CFDictionary, nil)
         switch status {
         case errSecSuccess:
+            ClickyTelemetry.screenMemory.notice("encryptionKey created new key")
             return key
         case errSecDuplicateItem:
-            print("⚠️ ScreenMemoryStore: key exists but is currently unreadable — skipping storage this session")
+            ClickyTelemetry.screenMemory.error("encryptionKey: key exists but is currently unreadable — failing closed, skipping storage this session status=\(status, privacy: .public)")
             return nil
         default:
-            print("⚠️ ScreenMemoryStore: can't persist encryption key (status \(status)) — skipping storage")
+            ClickyTelemetry.screenMemory.error("encryptionKey: can't persist encryption key — skipping storage status=\(status, privacy: .public)")
             return nil
         }
     }

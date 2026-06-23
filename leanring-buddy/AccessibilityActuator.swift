@@ -50,6 +50,7 @@ enum AccessibilityActuator {
         // action to the top edge of the screen).
         guard let primaryHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
                 ?? NSScreen.main?.frame.height else {
+            ClickyTelemetry.handsOn.notice("quartzPoint: no primary display height; returning point unconverted x=\(appKitPoint.x, privacy: .public) y=\(appKitPoint.y, privacy: .public)")
             return appKitPoint
         }
         return CGPoint(x: appKitPoint.x, y: primaryHeight - appKitPoint.y)
@@ -57,41 +58,53 @@ enum AccessibilityActuator {
 
     /// Presses (activates) the UI element at a Quartz global point.
     static func press(atQuartzPoint point: CGPoint) throws {
+        ClickyTelemetry.handsOn.notice("press start x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
         let element = try elementAtPoint(point)
         guard supportsAction(element, kAXPressAction) else {
+            ClickyTelemetry.handsOn.error("press unsupported action at x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
             throw AccessibilityActuatorError.actionUnsupported
         }
         let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
         guard result == .success else {
+            ClickyTelemetry.handsOn.error("press failed result=\(result.rawValue, privacy: .public) x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
             throw AccessibilityActuatorError.actionFailed("press \(result.rawValue)")
         }
+        ClickyTelemetry.handsOn.info("press success x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
     }
 
     /// Types `text` into the element at a Quartz global point by setting its
     /// AXValue. Best-effort: works for standard text fields/areas.
     static func setValue(_ text: String, atQuartzPoint point: CGPoint) throws {
+        ClickyTelemetry.handsOn.notice("setValue start x=\(point.x, privacy: .public) y=\(point.y, privacy: .public) textLength=\(text.count, privacy: .public)")
         let element = try elementAtPoint(point)
         // Only set the value if the element actually exposes a writable AXValue,
         // so we fail with a clear error on non-text elements instead of silently.
         var isSettable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isSettable) == .success,
               isSettable.boolValue else {
+            ClickyTelemetry.handsOn.error("setValue unsupported: AXValue not settable at x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
             throw AccessibilityActuatorError.actionUnsupported
         }
         let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef)
         guard result == .success else {
+            ClickyTelemetry.handsOn.error("setValue failed result=\(result.rawValue, privacy: .public) x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
             throw AccessibilityActuatorError.actionFailed("setValue \(result.rawValue)")
         }
+        ClickyTelemetry.handsOn.info("setValue success x=\(point.x, privacy: .public) y=\(point.y, privacy: .public) textLength=\(text.count, privacy: .public)")
     }
 
     // MARK: - Private
 
     private static func elementAtPoint(_ point: CGPoint) throws -> AXUIElement {
-        guard AXIsProcessTrusted() else { throw AccessibilityActuatorError.permissionDenied }
+        guard AXIsProcessTrusted() else {
+            ClickyTelemetry.handsOn.error("elementAtPoint: AXIsProcessTrusted false — accessibility permission gate")
+            throw AccessibilityActuatorError.permissionDenied
+        }
         let systemWide = AXUIElementCreateSystemWide()
         var element: AXUIElement?
         let result = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
         guard result == .success, let element else {
+            ClickyTelemetry.handsOn.error("elementAtPoint: no element result=\(result.rawValue, privacy: .public) x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
             throw AccessibilityActuatorError.noElementAtPoint
         }
         return element

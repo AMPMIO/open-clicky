@@ -33,6 +33,7 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else {
+            ClickyTelemetry.liveAudio.error("system audio start failed: no display available")
             throw NSError(domain: "SystemAudioCapture", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "No display available for audio capture."])
         }
@@ -49,10 +50,16 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-        try await stream.startCapture()
+        do {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            try await stream.startCapture()
+        } catch {
+            ClickyTelemetry.liveAudio.error("system audio start failed during stream setup: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
         self.stream = stream
         isCapturing = true
+        ClickyTelemetry.liveAudio.info("system audio capture started sampleRate=\(config.sampleRate, privacy: .public) channels=\(config.channelCount, privacy: .public)")
     }
 
     func stop() async {
@@ -61,6 +68,7 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
         self.stream = nil
         self.onPCM16 = nil
         isCapturing = false
+        ClickyTelemetry.liveAudio.info("system audio capture stopped")
     }
 
     /// One-shot transcription of buffered PCM16 mono audio. Posts a WAV to the
@@ -70,6 +78,7 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
     nonisolated static func transcribe(pcm16: Data, sampleRate: Int) async throws -> String {
         guard !pcm16.isEmpty,
               let url = ProviderConfiguration.workerRouteURL("/transcribe-audio") else {
+            ClickyTelemetry.liveAudio.notice("system audio transcribe skipped: Worker URL unconfigured or empty audio (bytes=\(pcm16.count, privacy: .public))")
             return ""
         }
         let wav = BuddyWAVFileBuilder.buildWAVData(fromPCM16MonoAudio: pcm16, sampleRate: sampleRate)
@@ -91,14 +100,18 @@ final class SystemAudioCaptureService: NSObject, ObservableObject {
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
+        ClickyTelemetry.liveAudio.notice("posting system audio WAV to Worker bytes=\(body.count, privacy: .public)")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            ClickyTelemetry.liveAudio.error("system audio transcribe failed statusCode=\((response as? HTTPURLResponse)?.statusCode ?? -1, privacy: .public)")
             throw NSError(domain: "SystemAudioTranscribe",
                           code: (response as? HTTPURLResponse)?.statusCode ?? -1,
                           userInfo: [NSLocalizedDescriptionKey: "transcription failed"])
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return (json?["text"] as? String) ?? ""
+        let transcript = (json?["text"] as? String) ?? ""
+        ClickyTelemetry.liveAudio.info("system audio transcribe success transcriptLength=\(transcript.count, privacy: .public)")
+        return transcript
     }
 }
 
@@ -146,7 +159,7 @@ extension SystemAudioCaptureService: SCStreamOutput {
         }
         // Already integer PCM — only 16-bit matches the WAV header we build.
         guard asbd.mBitsPerChannel == 16 else {
-            print("SystemAudioCaptureService: unexpected integer PCM bit depth \(asbd.mBitsPerChannel)")
+            ClickyTelemetry.liveAudio.notice("system audio unexpected integer PCM bit depth=\(asbd.mBitsPerChannel, privacy: .public)")
             return nil
         }
         return Data(bytes: data, count: byteCount)

@@ -77,6 +77,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
     /// Runs the PKCE authorization-code flow and stores the resulting tokens.
     func signIn(config: OAuthConfig) async throws {
         guard config.isComplete, let authorizeBase = URL(string: config.authorizeURL) else {
+            ClickyTelemetry.oauth.error("signIn aborted: notConfigured")
             throw OAuthSignInError.notConfigured
         }
         let codeVerifier = Self.randomCodeVerifier()
@@ -98,8 +99,11 @@ final class OAuthSignInManager: NSObject, ObservableObject {
 
         guard let authorizeURL = components?.url,
               let callbackScheme = URL(string: config.redirectURI)?.scheme else {
+            ClickyTelemetry.oauth.error("signIn aborted: notConfigured (bad authorize/redirect URL)")
             throw OAuthSignInError.notConfigured
         }
+
+        ClickyTelemetry.oauth.info("signIn start callbackScheme=\(callbackScheme, privacy: .public)")
 
         // Clear any prior (possibly stuck) session + stale refresh before starting.
         webAuthSession?.cancel()
@@ -110,32 +114,45 @@ final class OAuthSignInManager: NSObject, ObservableObject {
             let session = ASWebAuthenticationSession(url: authorizeURL, callbackURLScheme: callbackScheme) { callbackURL, error in
                 if let error {
                     let isCancel = (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
+                    if isCancel {
+                        ClickyTelemetry.oauth.notice("signIn cancelled by user")
+                    } else {
+                        ClickyTelemetry.oauth.error("signIn web session error")
+                    }
                     continuation.resume(throwing: isCancel ? OAuthSignInError.cancelled : error)
                     return
                 }
                 guard let callbackURL,
                       let items = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems else {
+                    ClickyTelemetry.oauth.error("signIn failed: noAuthCode (no callback query items)")
                     continuation.resume(throwing: OAuthSignInError.noAuthCode)
                     return
                 }
-                if let oauthError = items.first(where: { $0.name == "error" })?.value {
+                if items.first(where: { $0.name == "error" })?.value != nil {
+                    // Provider returned an OAuth error param; do NOT log its value.
+                    ClickyTelemetry.oauth.error("signIn failed: provider returned oauth error param")
+                    let oauthError = items.first(where: { $0.name == "error" })?.value ?? "oauth error"
                     continuation.resume(throwing: OAuthSignInError.tokenExchangeFailed(oauthError))
                     return
                 }
                 guard items.first(where: { $0.name == "state" })?.value == state else {
+                    ClickyTelemetry.oauth.error("signIn failed: stateMismatch")
                     continuation.resume(throwing: OAuthSignInError.stateMismatch)
                     return
                 }
                 guard let code = items.first(where: { $0.name == "code" })?.value else {
+                    ClickyTelemetry.oauth.error("signIn failed: noAuthCode")
                     continuation.resume(throwing: OAuthSignInError.noAuthCode)
                     return
                 }
+                ClickyTelemetry.oauth.info("signIn code received")
                 continuation.resume(returning: code)
             }
             session.presentationContextProvider = self
             self.webAuthSession = session
             if !session.start() {
                 self.webAuthSession = nil
+                ClickyTelemetry.oauth.error("signIn failed: sessionStartFailed")
                 continuation.resume(throwing: OAuthSignInError.sessionStartFailed)
             }
         }
@@ -166,6 +183,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
     func validAccessToken() -> String? {
         guard let tokens = loadTokens() else { return nil }
         if let expiresAt = tokens.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
+            ClickyTelemetry.oauth.notice("validAccessToken expired -> background refresh kicked")
             scheduleBackgroundRefresh(using: tokens)
             return nil
         }
@@ -201,6 +219,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
         webAuthSession = nil
         KeychainManager.delete(service: Self.tokenService)
         isSignedIn = false
+        ClickyTelemetry.oauth.info("signOut complete")
     }
 
     // MARK: - Token endpoints
@@ -224,7 +243,10 @@ final class OAuthSignInManager: NSObject, ObservableObject {
     }
 
     private func postToken(config: OAuthConfig, params: [String: String]) async throws -> StoredOAuthTokens {
-        guard let url = URL(string: config.tokenURL) else { throw OAuthSignInError.notConfigured }
+        guard let url = URL(string: config.tokenURL) else {
+            ClickyTelemetry.oauth.error("postToken aborted: notConfigured (bad token URL)")
+            throw OAuthSignInError.notConfigured
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -235,14 +257,21 @@ final class OAuthSignInManager: NSObject, ObservableObject {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw OAuthSignInError.tokenExchangeFailed(String(data: data, encoding: .utf8) ?? "http error")
+            // Status only — never the response body, in the log OR the thrown error
+            // (a future caller logging errorDescription must not leak the body).
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            ClickyTelemetry.oauth.error("tokenExchangeFailed status=\(statusCode, privacy: .public)")
+            throw OAuthSignInError.tokenExchangeFailed("HTTP \(statusCode)")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = json["access_token"] as? String else {
+            ClickyTelemetry.oauth.error("tokenExchangeFailed: missing access_token in response")
             throw OAuthSignInError.tokenExchangeFailed("missing access_token")
         }
         let refreshToken = (json["refresh_token"] as? String) ?? loadTokens()?.refreshToken
         let expiresAt = (json["expires_in"] as? Double).map { Date(timeIntervalSinceNow: $0) }
+        // Booleans only — never the token values themselves.
+        ClickyTelemetry.oauth.info("postToken ok hasRefresh=\(refreshToken != nil, privacy: .public) expiresKnown=\(expiresAt != nil, privacy: .public)")
         return StoredOAuthTokens(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt)
     }
 
@@ -253,6 +282,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
               let raw = String(data: data, encoding: .utf8) else { return }
         _ = KeychainManager.save(key: raw, service: Self.tokenService)
         isSignedIn = true
+        ClickyTelemetry.oauth.info("persist tokens stored hasRefresh=\(tokens.refreshToken != nil, privacy: .public) expiresKnown=\(tokens.expiresAt != nil, privacy: .public)")
     }
 
     private func loadTokens() -> StoredOAuthTokens? {

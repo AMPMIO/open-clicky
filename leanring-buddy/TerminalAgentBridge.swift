@@ -56,18 +56,27 @@ enum TerminalAgentBridge {
     /// shell, SSH session, or different app.
     static func targetTerminal() -> TerminalApp? {
         guard let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
-        return TerminalApp.allCases.first { $0.bundleIdentifier == front }
+        guard let match = TerminalApp.allCases.first(where: { $0.bundleIdentifier == front }) else {
+            ClickyTelemetry.terminalBridge.debug("targetTerminal: no supported terminal frontmost")
+            return nil
+        }
+        return match
     }
 
     /// Activates `terminal` and pastes `prompt` + Return into its focused session.
     /// Uses the pasteboard (reliable for arbitrary/long text) and restores the
     /// previous clipboard contents afterward.
     static func sendPrompt(_ prompt: String, to terminal: TerminalApp) throws {
-        guard AXIsProcessTrusted() else { throw TerminalAgentBridgeError.permissionDenied }
+        ClickyTelemetry.terminalBridge.info("sendPrompt: dispatching to \(terminal.displayName, privacy: .public) promptLength=\(prompt.count, privacy: .public)")
+        guard AXIsProcessTrusted() else {
+            ClickyTelemetry.terminalBridge.error("sendPrompt: Accessibility not trusted (AXIsProcessTrusted false), aborting")
+            throw TerminalAgentBridgeError.permissionDenied
+        }
 
         // Re-verify the SAME terminal is still frontmost right before we paste, so
         // we never inject into a window that took focus after the proposal.
         guard targetTerminal() == terminal else {
+            ClickyTelemetry.terminalBridge.error("sendPrompt: target \(terminal.displayName, privacy: .public) no longer frontmost at paste time, aborting")
             throw TerminalAgentBridgeError.noRunningTerminal
         }
 
@@ -89,9 +98,11 @@ enum TerminalAgentBridge {
         do {
             try runAppleScript(script)
         } catch {
+            ClickyTelemetry.terminalBridge.error("sendPrompt: AppleScript dispatch failed for \(terminal.displayName, privacy: .public) (Automation likely denied), restoring clipboard")
             restorePasteboard(savedItems, ifChangeCountEquals: promptChangeCount)
             throw error
         }
+        ClickyTelemetry.terminalBridge.info("sendPrompt: pasted into \(terminal.displayName, privacy: .public)")
 
         // Restore the user's full clipboard after the paste has been consumed —
         // but only if nothing else has touched the clipboard since our write.
@@ -106,6 +117,7 @@ enum TerminalAgentBridge {
     static func readVisibleText(from terminal: TerminalApp) -> String? {
         guard AXIsProcessTrusted(),
               let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == terminal.bundleIdentifier }) else {
+            ClickyTelemetry.terminalBridge.debug("readVisibleText: \(terminal.displayName, privacy: .public) not trusted or not running")
             return nil
         }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
@@ -113,12 +125,14 @@ enum TerminalAgentBridge {
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focusedElement = focused,
               CFGetTypeID(focusedElement) == AXUIElementGetTypeID() else {
+            ClickyTelemetry.terminalBridge.debug("readVisibleText: no focused AX element for \(terminal.displayName, privacy: .public)")
             return nil
         }
         let element = focusedElement as! AXUIElement // safe: type checked above
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
               let text = value as? String, !text.isEmpty else {
+            ClickyTelemetry.terminalBridge.debug("readVisibleText: \(terminal.displayName, privacy: .public) exposed no readable AXValue")
             return nil
         }
         return text
@@ -145,7 +159,10 @@ enum TerminalAgentBridge {
     /// prompt behind.
     private static func restorePasteboard(_ snapshot: [[NSPasteboard.PasteboardType: Data]], ifChangeCountEquals expected: Int) {
         let pasteboard = NSPasteboard.general
-        guard pasteboard.changeCount == expected else { return }
+        guard pasteboard.changeCount == expected else {
+            ClickyTelemetry.terminalBridge.debug("restorePasteboard: clipboard changed since our write, skipping restore")
+            return
+        }
         pasteboard.clearContents() // removes our prompt
         let items: [NSPasteboardItem] = snapshot.compactMap { representation in
             guard !representation.isEmpty else { return nil }

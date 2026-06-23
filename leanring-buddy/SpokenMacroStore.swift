@@ -38,22 +38,32 @@ final class SpokenMacroStore: ObservableObject {
         guard !trimmedName.isEmpty, !steps.isEmpty else { return }
         macros.removeAll { $0.name.lowercased() == trimmedName.lowercased() }
         macros.append(SpokenMacro(name: trimmedName, steps: steps))
+        ClickyTelemetry.spokenMacros.info("save macro name=\(trimmedName, privacy: .public) stepCount=\(steps.count, privacy: .public)")
         persist()
     }
 
     func delete(named name: String) {
         macros.removeAll { $0.name.lowercased() == name.lowercased() }
+        ClickyTelemetry.spokenMacros.info("delete macro name=\(name, privacy: .public)")
         persist()
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode([SpokenMacro].self, from: data) else { return }
-        macros = decoded
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        do {
+            macros = try JSONDecoder().decode([SpokenMacro].self, from: data)
+            ClickyTelemetry.spokenMacros.info("load macros macroCount=\(macros.count, privacy: .public)")
+        } catch {
+            ClickyTelemetry.spokenMacros.error("load decode failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(macros) else { return }
-        UserDefaults.standard.set(data, forKey: defaultsKey)
+        do {
+            let data = try JSONEncoder().encode(macros)
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        } catch {
+            ClickyTelemetry.spokenMacros.error("persist encode failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }

@@ -22,13 +22,19 @@ import Vision
 enum WatchModeChangeDetector {
     static func averageHash(of imageData: Data) -> UInt64? {
         guard let image = NSImage(data: imageData),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            ClickyTelemetry.watchMode.notice("averageHash image decode failed bytes=\(imageData.count, privacy: .public)")
+            return nil
+        }
         let side = 8
         var pixels = [UInt8](repeating: 0, count: side * side)
         let grayColorSpace = CGColorSpaceCreateDeviceGray()
         guard let context = CGContext(data: &pixels, width: side, height: side, bitsPerComponent: 8,
                                       bytesPerRow: side, space: grayColorSpace,
-                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+            ClickyTelemetry.watchMode.notice("averageHash CGContext create failed")
+            return nil
+        }
         context.interpolationQuality = .low
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
 
@@ -59,7 +65,10 @@ enum WatchModeTextGate {
 
     static func looksActionable(in imageData: Data) -> Bool {
         guard let image = NSImage(data: imageData),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return false }
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            ClickyTelemetry.watchMode.notice("looksActionable image decode failed bytes=\(imageData.count, privacy: .public)")
+            return false
+        }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])

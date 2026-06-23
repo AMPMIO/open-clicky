@@ -32,6 +32,7 @@ export default {
     }
 
     try {
+      console.log(`[${url.pathname}] ${request.method}`);
       if (url.pathname === "/chat") {
         return await handleChat(request, env);
       }
@@ -96,6 +97,7 @@ async function handleTranscribeAudio(request: Request, env: Env): Promise<Respon
   const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // OpenAI per-file limit; also caps cost abuse
   const contentLength = request.headers.get("content-length");
   if (contentLength && parseInt(contentLength, 10) > MAX_AUDIO_BYTES) {
+    console.error(`[/transcribe-audio] rejected oversize body ${contentLength}B (max ${MAX_AUDIO_BYTES})`);
     return new Response(
       JSON.stringify({ error: "Audio file too large (max 25MB)" }),
       { status: 413, headers: { "content-type": "application/json" } }

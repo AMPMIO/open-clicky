@@ -47,22 +47,26 @@ class ProviderManager: ObservableObject {
         case .workerProxy:
             guard config.workerBaseURL != ProviderConfiguration.defaultWorkerBaseURL,
                   let url = sanitizedURL(config.workerBaseURL, path: "/chat") else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("Worker Proxy", privacy: .public): \("Set your Worker URL in Settings.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "Worker Proxy",
                     reason: "Set your Worker URL in Settings."
                 )
             }
+            ClickyTelemetry.provider.info("built provider \("Worker Proxy", privacy: .public), ready")
             return AnthropicProvider(proxyURL: url.absoluteString)
 
         case .openRouter:
             let apiKey = effectiveBearer(for: .openRouter, boundProvider: config.oauthBoundProvider, fallback: config.openRouterAPIKey ?? "")
             guard !apiKey.isEmpty,
                   let url = sanitizedURL(ProviderConfiguration.defaultOpenRouterBaseURL, path: "/chat/completions") else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("OpenRouter", privacy: .public): \("Add your OpenRouter API key in Settings.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "OpenRouter",
                     reason: "Add your OpenRouter API key in Settings."
                 )
             }
+            ClickyTelemetry.provider.info("built provider \("OpenRouter", privacy: .public), ready")
             return OpenAICompatibleProvider(
                 displayName: "OpenRouter",
                 baseURL: url,
@@ -81,6 +85,7 @@ class ProviderManager: ObservableObject {
             // Require an explicit token so a blank config can't silently send
             // screenshots to whatever process binds the default local port.
             guard !token.isEmpty else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("OpenClaw", privacy: .public): \("Add the OpenClaw bearer token in Settings.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "OpenClaw",
                     reason: "Add the OpenClaw bearer token in Settings."
@@ -91,11 +96,13 @@ class ProviderManager: ObservableObject {
             // different request/response shape the shared OpenAI parser cannot
             // read, so it must NOT be used here.
             guard let url = sanitizedURL(endpoint, path: "/v1/chat/completions") else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("OpenClaw", privacy: .public): \("The OpenClaw endpoint is not a valid URL.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "OpenClaw",
                     reason: "The OpenClaw endpoint is not a valid URL."
                 )
             }
+            ClickyTelemetry.provider.info("built provider \("OpenClaw", privacy: .public), ready")
             return OpenAICompatibleProvider(
                 displayName: "OpenClaw",
                 baseURL: url,
@@ -110,6 +117,7 @@ class ProviderManager: ObservableObject {
             // Require an explicit token (Hermes's API_SERVER_KEY) so a blank config
             // can't silently send screenshots to whatever binds localhost:8642.
             guard !token.isEmpty else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("Hermes", privacy: .public): \("Add the Hermes API token in Settings.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "Hermes",
                     reason: "Add the Hermes API token in Settings."
@@ -119,11 +127,13 @@ class ProviderManager: ObservableObject {
             // server (default http://localhost:8642), so it reuses OpenAICompatibleProvider
             // verbatim — same image_url vision parts and choices[].delta.content SSE.
             guard let url = sanitizedURL(endpoint, path: "/v1/chat/completions") else {
+                ClickyTelemetry.provider.notice("returning UnconfiguredProvider for \("Hermes", privacy: .public): \("The Hermes endpoint is not a valid URL.", privacy: .public)")
                 return UnconfiguredProvider(
                     provider: "Hermes",
                     reason: "The Hermes endpoint is not a valid URL."
                 )
             }
+            ClickyTelemetry.provider.info("built provider \("Hermes", privacy: .public), ready")
             return OpenAICompatibleProvider(
                 displayName: "Hermes",
                 baseURL: url,
@@ -153,8 +163,10 @@ class ProviderManager: ObservableObject {
             if boundProvider == provider,
                OAuthSignInManager.shared.isSignedIn,
                let token = OAuthSignInManager.shared.validAccessToken(), !token.isEmpty {
+                ClickyTelemetry.provider.info("using OAuth bearer for \(String(describing: provider), privacy: .public)")
                 return token
             }
+            ClickyTelemetry.provider.debug("falling back to pasted key for \(String(describing: provider), privacy: .public)")
             return fallback
         }
     }

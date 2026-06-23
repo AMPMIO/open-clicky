@@ -273,7 +273,10 @@ final class CompanionManager: ObservableObject {
     /// One Watch Mode pass: capture → cheap change gate → cheap text gate → escalate
     /// to the vision model for an optional brief nudge. Every gate fails closed (skip).
     private func watchModeTick() async {
-        guard watchModeStillActive, providerManager.isCurrentProviderReady else { return }
+        guard watchModeStillActive, providerManager.isCurrentProviderReady else {
+            ClickyTelemetry.watchMode.debug("tick skipped ready=\(providerManager.isCurrentProviderReady, privacy: .public) cancelled=\(Task.isCancelled, privacy: .public)")
+            return
+        }
         // OC-99: per-escalation backoff applies to EVERY provider attempt.
         if let last = lastWatchEscalationAt, Date().timeIntervalSince(last) < watchEscalationGap { return }
 
@@ -304,14 +307,21 @@ final class CompanionManager: ObservableObject {
         lastWatchEscalationAt = Date()
 
         let labeledImages = [(data: imageData, label: cursorScreen.label)]
-        guard let response = try? await providerManager.currentProvider.chatStreaming(
-            images: labeledImages,
-            systemPrompt: Self.watchModeInstructions,
-            conversationHistory: [],
-            userPrompt: "Look at my screen. If there's something genuinely worth a brief, helpful heads-up right now, reply 'NUDGE: <one short sentence>'. Otherwise reply exactly 'NONE'.",
-            model: selectedModel,
-            onTextChunk: { _ in }
-        ) else { return }
+        ClickyTelemetry.watchMode.notice("escalation model=\(selectedModel, privacy: .public)")
+        let response: (text: String, duration: TimeInterval)
+        do {
+            response = try await providerManager.currentProvider.chatStreaming(
+                images: labeledImages,
+                systemPrompt: Self.watchModeInstructions,
+                conversationHistory: [],
+                userPrompt: "Look at my screen. If there's something genuinely worth a brief, helpful heads-up right now, reply 'NUDGE: <one short sentence>'. Otherwise reply exactly 'NONE'.",
+                model: selectedModel,
+                onTextChunk: { _ in }
+            )
+        } catch {
+            ClickyTelemetry.watchMode.error("chatStreaming threw")
+            return
+        }
 
         // Re-check before forcing a spoken nudge into the pipeline.
         guard watchModeStillActive else { return }
@@ -320,6 +330,7 @@ final class CompanionManager: ObservableObject {
         let nudge = String(text[nudgeRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nudge.isEmpty else { return }
         lastWatchNudgeAt = Date()
+        ClickyTelemetry.watchMode.info("nudge delivered (len)=\(nudge.count, privacy: .public)")
         // OC-55: surface as a quiet nudge (transient cursor + short spoken message).
         speakSystemMessage(nudge)
     }
@@ -344,7 +355,10 @@ final class CompanionManager: ObservableObject {
     private func handleSpokenMacroCommand(_ transcript: String) -> Bool {
         // During replay, steps must run as normal prompts — never re-intercepted as
         // macro commands (which would recurse on a "run macro …" step).
-        if activeReplayID != nil { return false }
+        if activeReplayID != nil {
+            ClickyTelemetry.spokenMacros.debug("intercept skipped during replay")
+            return false
+        }
 
         let lower = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -372,12 +386,14 @@ final class CompanionManager: ObservableObject {
                 macroRecordingName = nil
                 macroRecordingSteps = []
                 speakSystemMessage("saved macro \(recordingName) with \(stepCount) step\(stepCount == 1 ? "" : "s").")
+                ClickyTelemetry.spokenMacros.info("macro saved steps=\(stepCount, privacy: .public)")
                 return true
             }
             if lower == "cancel macro" || lower == "cancel recording" || lower == "discard macro" {
                 macroRecordingName = nil
                 macroRecordingSteps = []
                 speakSystemMessage("discarded the macro.")
+                ClickyTelemetry.spokenMacros.info("macro discarded")
                 return true
             }
             macroRecordingSteps.append(transcript)
@@ -389,12 +405,14 @@ final class CompanionManager: ObservableObject {
             macroRecordingName = name
             macroRecordingSteps = []
             speakSystemMessage("recording macro \(name). say each step, then say save macro.")
+            ClickyTelemetry.spokenMacros.info("macro record started (nameLen)=\(name.count, privacy: .public)")
             return true
         }
 
         if let name = Self.parseMacroName(from: lower, afterAnyOf: ["run macro ", "play macro ", "run the macro ", "execute macro "]) {
             guard let macro = SpokenMacroStore.shared.macro(named: name) else {
                 speakSystemMessage("i don't have a macro called \(name).")
+                ClickyTelemetry.spokenMacros.notice("unknown macro on run")
                 return true
             }
             runMacro(macro)
@@ -440,12 +458,16 @@ final class CompanionManager: ObservableObject {
         let replayID = UUID()
         activeReplayID = replayID
         speakSystemMessage("running macro \(macro.name).")
+        ClickyTelemetry.spokenMacros.info("macro run start steps=\(macro.steps.count, privacy: .public)")
         macroReplayTask = Task { @MainActor in
             // Only clear shared replay state if THIS replay is still the active one,
             // so a late-cancelled replay can't stomp a newer one (OC-101).
             defer { if activeReplayID == replayID { activeReplayID = nil } }
             for step in macro.steps {
-                guard !Task.isCancelled, activeReplayID == replayID, macroRecordingName == nil else { break }
+                guard !Task.isCancelled, activeReplayID == replayID, macroRecordingName == nil else {
+                    ClickyTelemetry.spokenMacros.notice("replay aborted")
+                    break
+                }
                 sendTranscriptToClaudeWithScreenshot(transcript: step)
                 // Await the step's ACTUAL pipeline completion before advancing (don't
                 // infer from timers — that runs steps out of order), then let its TTS
@@ -462,9 +484,11 @@ final class CompanionManager: ObservableObject {
                 // saved step isn't swallowed by the confirmation handler.
                 if pendingHandsOnAction != nil || pendingTerminalDispatch != nil {
                     speakSystemMessage("macro paused — confirm the pending action first.")
+                    ClickyTelemetry.spokenMacros.notice("replay paused awaiting confirmation")
                     break
                 }
             }
+            ClickyTelemetry.spokenMacros.info("macro run finished")
         }
     }
 
@@ -1039,6 +1063,7 @@ final class CompanionManager: ObservableObject {
             do {
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                ClickyTelemetry.pipeline.info("capture done screens=\(screenCaptures.count, privacy: .public)")
 
                 guard !Task.isCancelled else { return }
 
@@ -1064,7 +1089,10 @@ final class CompanionManager: ObservableObject {
                         let appSuffix = recall.entry.appName.map { " in \($0)" } ?? ""
                         images.append((data: recall.imageData, label: "a past screen you saw earlier\(appSuffix)"))
                     }
-                    if !recalls.isEmpty { print("🧠 Screen Memory: injected \(recalls.count) past moment(s)") }
+                    if !recalls.isEmpty {
+                        print("🧠 Screen Memory: injected \(recalls.count) past moment(s)")
+                        ClickyTelemetry.screenMemory.info("recall injection count=\(recalls.count, privacy: .public)")
+                    }
                 }
 
                 // Live Companion: fold in a transcript of recently-heard system
@@ -1090,9 +1118,13 @@ final class CompanionManager: ObservableObject {
 
                         user said: \(transcript)
                         """
+                        ClickyTelemetry.liveAudio.info("untrusted ambient audio folded (len)=\(sanitizedAudio.count, privacy: .public)")
+                    } else {
+                        ClickyTelemetry.liveAudio.notice("ambient audio transcription empty")
                     }
                 }
 
+                ClickyTelemetry.pipeline.info("provider stream start images=\(images.count, privacy: .public)")
                 let (fullResponseText, _) = try await providerManager.currentProvider.chatStreaming(
                     images: images,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt
@@ -1107,6 +1139,7 @@ final class CompanionManager: ObservableObject {
                         // No streaming text display — spinner stays until TTS plays
                     }
                 )
+                ClickyTelemetry.pipeline.info("provider stream finish len=\(fullResponseText.count, privacy: .public)")
 
                 guard !Task.isCancelled else { return }
 
@@ -1199,6 +1232,7 @@ final class CompanionManager: ObservableObject {
                                 spokenText += spokenText.isEmpty ? "" : " "
                                 spokenText += "that looks risky, so i'll point at \(label) but you should click it yourself."
                                 print("🖐️ Hands-On: refused destructive action \"\(label)\"")
+                                ClickyTelemetry.handsOn.notice("refused destructive action (labelLen)=\(label.count, privacy: .public)")
                             } else {
                                 pendingHandsOnAction = PendingHandsOnAction(
                                     quartzPoint: AccessibilityActuator.quartzPoint(fromAppKitGlobal: appKitLocation),
@@ -1209,6 +1243,7 @@ final class CompanionManager: ObservableObject {
                                 let ask = "i'll click \(label). say go to confirm, or cancel."
                                 spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
                                 print("🖐️ Hands-On: pending click on \"\(label)\"")
+                                ClickyTelemetry.handsOn.notice("[ACT] proposal queued (labelLen)=\(label.count, privacy: .public)")
                             }
                         }
                     }
@@ -1225,6 +1260,7 @@ final class CompanionManager: ObservableObject {
                             let ask = "i'll send that to \(terminal.displayName). say go to confirm, or cancel."
                             spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
                             print("⌨️ Terminal bridge: pending dispatch to \(terminal.displayName)")
+                            ClickyTelemetry.terminalBridge.notice("[RUN] proposal queued (promptLen)=\(runPrompt.count, privacy: .public)")
                         } else {
                             spokenText += spokenText.isEmpty ? "" : " "
                             spokenText += "focus the terminal you want me to send it to first, then ask again."
@@ -1272,6 +1308,7 @@ final class CompanionManager: ObservableObject {
                         } catch {
                             ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                             print("⚠️ ElevenLabs TTS error: \(error)")
+                            ClickyTelemetry.pipeline.error("TTS failure")
                             speakCreditsErrorFallback()
                         }
                     } else {
@@ -1284,6 +1321,7 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
+                ClickyTelemetry.pipeline.error("chatStreaming threw")
                 speakCreditsErrorFallback()
             }
 
@@ -1431,15 +1469,18 @@ final class CompanionManager: ObservableObject {
             guard Date().timeIntervalSince(pending.proposedAt) < 30,
                   currentApp == pending.frontmostAppBundleID else {
                 speakSystemMessage("the screen changed, so i didn't click. ask me again.")
+                ClickyTelemetry.handsOn.notice("stale-rejected appChanged=\(currentApp != pending.frontmostAppBundleID, privacy: .public)")
                 return
             }
             ClickyAnalytics.trackElementPointed(elementLabel: "hands-on:" + pending.label)
+            ClickyTelemetry.handsOn.notice("CONFIRMED press (labelLen)=\(pending.label.count, privacy: .public)")
             do {
                 try AccessibilityActuator.press(atQuartzPoint: pending.quartzPoint)
                 speakSystemMessage("done.")
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("🖐️ Hands-On action failed: \(error)")
+                ClickyTelemetry.handsOn.error("press failed")
                 speakSystemMessage("i couldn't click that.")
             }
         }
@@ -1476,14 +1517,17 @@ final class CompanionManager: ObservableObject {
         case .confirm:
             guard Date().timeIntervalSince(pending.proposedAt) < 60 else {
                 speakSystemMessage("that request expired, ask me again.")
+                ClickyTelemetry.terminalBridge.notice("[RUN] expired")
                 return
             }
+            ClickyTelemetry.terminalBridge.notice("[RUN] CONFIRMED dispatch (promptLen)=\(pending.prompt.count, privacy: .public)")
             do {
                 try TerminalAgentBridge.sendPrompt(pending.prompt, to: pending.terminal)
                 speakSystemMessage("sent to \(pending.terminal.displayName).")
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⌨️ Terminal dispatch failed: \(error)")
+                ClickyTelemetry.terminalBridge.error("dispatch failed")
                 speakSystemMessage("i couldn't send that.")
             }
         }
