@@ -25,5 +25,16 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.clicky.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openclicky</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -55,7 +55,7 @@ class ProviderManager: ObservableObject {
             return AnthropicProvider(proxyURL: url.absoluteString)
 
         case .openRouter:
-            let apiKey = effectiveBearer(fallback: config.openRouterAPIKey ?? "")
+            let apiKey = effectiveBearer(for: .openRouter, boundProvider: config.oauthBoundProvider, fallback: config.openRouterAPIKey ?? "")
             guard !apiKey.isEmpty,
                   let url = sanitizedURL(ProviderConfiguration.defaultOpenRouterBaseURL, path: "/chat/completions") else {
                 return UnconfiguredProvider(
@@ -74,7 +74,7 @@ class ProviderManager: ObservableObject {
             )
 
         case .openClaw:
-            let token = effectiveBearer(fallback: config.openClawToken ?? "")
+            let token = effectiveBearer(for: .openClaw, boundProvider: config.oauthBoundProvider, fallback: config.openClawToken ?? "")
             let endpoint = config.openClawEndpoint.isEmpty
                 ? "http://localhost:18789"
                 : config.openClawEndpoint
@@ -103,7 +103,7 @@ class ProviderManager: ObservableObject {
             )
 
         case .hermes:
-            let token = effectiveBearer(fallback: config.hermesToken ?? "")
+            let token = effectiveBearer(for: .hermes, boundProvider: config.oauthBoundProvider, fallback: config.hermesToken ?? "")
             let endpoint = config.hermesEndpoint.isEmpty
                 ? ProviderConfiguration.defaultHermesEndpoint
                 : config.hermesEndpoint
@@ -142,16 +142,21 @@ class ProviderManager: ObservableObject {
         ProviderConfiguration.validatedURL(base: base, path: path)
     }
 
-    /// Bearer to use for an OpenAI-compatible provider: the OAuth access token when
-    /// the user is signed in ("Sign in with ChatGPT"), otherwise the pasted
-    /// key/token. The user must point the provider's endpoint at the API their
-    /// OAuth app authorizes. Falls back gracefully to the API key when not signed in.
-    private static func effectiveBearer(fallback: String) -> String {
-        if OAuthSignInManager.shared.isSignedIn,
-           let token = OAuthSignInManager.shared.storedAccessToken(), !token.isEmpty {
-            return token
+    /// Bearer to use for an OpenAI-compatible provider: the OAuth access token ONLY
+    /// when the user signed in AND bound OAuth to THIS provider (so an OAuth token can
+    /// never be sent to a different provider's endpoint — OC-96), and only while the
+    /// token is unexpired (otherwise we fall back to the pasted key — OC-97).
+    private static func effectiveBearer(for provider: APIProviderType, boundProvider: APIProviderType?, fallback: String) -> String {
+        // buildProvider always runs on the main actor (init/updateProvider), so this
+        // synchronous read of the @MainActor OAuth manager is safe.
+        MainActor.assumeIsolated {
+            if boundProvider == provider,
+               OAuthSignInManager.shared.isSignedIn,
+               let token = OAuthSignInManager.shared.validAccessToken(), !token.isEmpty {
+                return token
+            }
+            return fallback
         }
-        return fallback
     }
 }
 

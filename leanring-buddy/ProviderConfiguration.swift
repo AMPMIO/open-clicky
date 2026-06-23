@@ -68,6 +68,7 @@ struct ProviderConfiguration {
     private static let hermesActionModeKey = "hermesActionModeEnabled"
     private static let workerBaseURLKey = "workerBaseURL"
     private static let oauthConfigKey = "oauthConfig"
+    private static let oauthBoundProviderKey = "oauthBoundProvider"
     /// Selected model is stored PER provider so switching backends never sends an
     /// incompatible model id (e.g. an OpenRouter slug to the Anthropic route).
     private static let selectedModelKeyPrefix = "selectedModelID."
@@ -158,6 +159,20 @@ struct ProviderConfiguration {
         set {
             guard let encoded = try? JSONEncoder().encode(newValue) else { return }
             UserDefaults.standard.set(encoded, forKey: Self.oauthConfigKey)
+        }
+    }
+
+    /// The provider the OAuth token is bound to (set at sign-in). The OAuth bearer is
+    /// only ever used for THIS provider, so signing in with one OAuth app can't leak
+    /// that token to a different provider's endpoint.
+    var oauthBoundProvider: APIProviderType? {
+        get { UserDefaults.standard.string(forKey: Self.oauthBoundProviderKey).flatMap { APIProviderType(rawValue: $0) } }
+        set {
+            if let value = newValue {
+                UserDefaults.standard.set(value.rawValue, forKey: Self.oauthBoundProviderKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.oauthBoundProviderKey)
+            }
         }
     }
 

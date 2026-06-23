@@ -132,6 +132,15 @@ heads-up (e.g. explaining an error). Off by default.
 - **OC-57 — Guardrails.** Off by default, rate-limited (≥90s between nudges), only runs while idle
   and with a ready provider, and never points/acts in this mode. Settings toggle. (`SettingsView.swift`)
 
+#### F3 hardening — Codex review follow-ups (OC-99–100)
+
+- **OC-99 — Cancellable, single-flight ticks.** The watch tick is a tracked task (one at a time),
+  cancelled on disable/stop/push-to-talk, and re-checks enabled/idle/cancelled around every await;
+  a per-escalation backoff (≥30s) caps provider calls regardless of NUDGE/NONE.
+- **OC-100 — No baseline blind spot.** The analyzed-frame hash updates only when a frame is
+  actually escalated, so a persistent error appearing during the cooldown isn't mistaken for a
+  static screen afterward. (`CompanionManager.swift`)
+
 ### F5 — Spoken Macros (epic OC-10)
 
 Record a named workflow by voice and replay it later — built on F1's actuation.
@@ -145,6 +154,15 @@ Record a named workflow by voice and replay it later — built on F1's actuation
   events — robust to layout changes.)* (`CompanionManager.swift`)
 - **OC-66 — Manage.** By voice: run / delete / list; Settings lists saved macros with a delete
   button. (`SettingsView.swift`)
+
+#### F5 hardening — Codex review follow-ups (OC-101–102)
+
+- **OC-101 — Replay isolation + real completion.** Replays carry a UUID identity (a late-cancelled
+  replay can't clear a newer one's state) and each step now awaits its actual pipeline completion
+  before advancing, instead of inferring it from timers.
+- **OC-102 — Confirmed deletion.** "delete macro" checks the macro exists, then requires a yes/no
+  voice confirmation before deleting — a misheard command can't destroy a saved workflow.
+  (`CompanionManager.swift`)
 
 ### F6 — Sign in with ChatGPT (OAuth) (epic OC-11)
 
@@ -160,6 +178,18 @@ Record a named workflow by voice and replay it later — built on F1's actuation
   Bearer for the active OpenAI-compatible provider (OpenRouter/OpenClaw/Hermes), falling back to
   the pasted API key when signed out. Settings adds a sign-in section (client id + endpoints +
   scopes). (`ProviderManager.swift`, `ProviderConfiguration.swift`, `SettingsView.swift`)
+
+#### F6 hardening — Codex review follow-ups (OC-96–98)
+
+- **OC-96 (critical) — Scoped token.** The OAuth bearer is bound to the provider active at
+  sign-in and only used for that provider, so it can never be sent to a different provider's
+  endpoint (credential-leak fix).
+- **OC-97 — No stale tokens.** An expired stored token is treated as absent (so the pasted API
+  key is used) and a background refresh is kicked off.
+- **OC-98 — Flow hardening.** Adds a session-bound `state` (verified on callback) + OAuth `error`
+  handling, checks `ASWebAuthenticationSession.start()` (resumes with an error instead of
+  hanging), and registers the `openclicky://` callback scheme. (`OAuthSignInManager.swift`,
+  `ProviderManager.swift`, `ProviderConfiguration.swift`, `Info.plist`)
 
 ## [Unreleased] — Opus Upgrade (Linear epics OC-1…OC-5)
 

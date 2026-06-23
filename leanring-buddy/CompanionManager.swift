@@ -223,10 +223,13 @@ final class CompanionManager: ObservableObject {
     /// Off by default.
     @Published var isWatchModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isWatchModeEnabled")
     private var watchModeTimer: Timer?
-    private var lastWatchFrameHash: UInt64?
+    private var watchModeTask: Task<Void, Never>?       // in-flight tick (single-flight)
+    private var lastWatchFrameHash: UInt64?             // last ANALYZED frame
     private var lastWatchNudgeAt: Date?
+    private var lastWatchEscalationAt: Date?            // last provider escalation (any verdict)
     private let watchPollInterval: TimeInterval = 12
     private let watchMinNudgeGap: TimeInterval = 90
+    private let watchEscalationGap: TimeInterval = 30   // min gap between provider escalations
     private let watchChangeThreshold = 8 // Hamming distance over the 64-bit aHash
 
     /// Retained synthesizer for short system-voice lines (nudges, setup hints). Must
@@ -244,40 +247,61 @@ final class CompanionManager: ObservableObject {
         stopWatchModeTimer()
         lastWatchFrameHash = nil
         watchModeTimer = Timer.scheduledTimer(withTimeInterval: watchPollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in await self?.watchModeTick() }
+            Task { @MainActor [weak self] in
+                guard let self, self.watchModeTask == nil else { return } // single-flight
+                self.watchModeTask = Task { @MainActor [weak self] in
+                    await self?.watchModeTick()
+                    self?.watchModeTask = nil
+                }
+            }
         }
     }
 
     private func stopWatchModeTimer() {
         watchModeTimer?.invalidate()
         watchModeTimer = nil
+        watchModeTask?.cancel()
+        watchModeTask = nil
+    }
+
+    /// True only when Watch Mode should keep running right now — re-checked around
+    /// every await so a toggle-off / stop / push-to-talk aborts an in-flight tick.
+    private var watchModeStillActive: Bool {
+        !Task.isCancelled && isWatchModeEnabled && voiceState == .idle
     }
 
     /// One Watch Mode pass: capture → cheap change gate → cheap text gate → escalate
     /// to the vision model for an optional brief nudge. Every gate fails closed (skip).
     private func watchModeTick() async {
-        guard isWatchModeEnabled, providerManager.isCurrentProviderReady else { return }
-        // Never watch while the user is actively interacting with Clicky.
-        guard voiceState == .idle else { return }
+        guard watchModeStillActive, providerManager.isCurrentProviderReady else { return }
+        // OC-99: per-escalation backoff applies to EVERY provider attempt.
+        if let last = lastWatchEscalationAt, Date().timeIntervalSince(last) < watchEscalationGap { return }
 
         guard let captures = try? await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(),
               let cursorScreen = captures.first(where: { $0.isCursorScreen }) ?? captures.first else { return }
+        // Re-check after the capture await — the user may have opted out / started talking.
+        guard watchModeStillActive else { return }
         let imageData = cursorScreen.imageData
 
-        // OC-47: change-detection gate — ignore static screens.
-        if let hash = WatchModeChangeDetector.averageHash(of: imageData) {
-            if let last = lastWatchFrameHash,
-               WatchModeChangeDetector.hammingDistance(last, hash) < watchChangeThreshold {
-                return
-            }
-            lastWatchFrameHash = hash
+        // OC-47: change gate — compare against the last ANALYZED frame. Don't update
+        // the baseline here (OC-100): a persistent error during cooldown must stay
+        // "changed" until it's actually analyzed.
+        guard let hash = WatchModeChangeDetector.averageHash(of: imageData) else { return }
+        if let last = lastWatchFrameHash,
+           WatchModeChangeDetector.hammingDistance(last, hash) < watchChangeThreshold {
+            return
         }
 
-        // OC-57: rate limit so nudges stay occasional.
+        // OC-57: nudge rate limit so nudges stay occasional.
         if let last = lastWatchNudgeAt, Date().timeIntervalSince(last) < watchMinNudgeGap { return }
 
         // OC-52: cheap OCR pre-gate — only escalate when something looks actionable.
         guard WatchModeTextGate.looksActionable(in: imageData) else { return }
+
+        // Eligible to escalate: this frame is now the analyzed baseline (OC-100) and
+        // counts as an escalation for the backoff (OC-99).
+        lastWatchFrameHash = hash
+        lastWatchEscalationAt = Date()
 
         let labeledImages = [(data: imageData, label: cursorScreen.label)]
         guard let response = try? await providerManager.currentProvider.chatStreaming(
@@ -289,6 +313,8 @@ final class CompanionManager: ObservableObject {
             onTextChunk: { _ in }
         ) else { return }
 
+        // Re-check before forcing a spoken nudge into the pipeline.
+        guard watchModeStillActive else { return }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let nudgeRange = text.range(of: "NUDGE:", options: .caseInsensitive) else { return }
         let nudge = String(text[nudgeRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -307,7 +333,10 @@ final class CompanionManager: ObservableObject {
     private var macroRecordingName: String?
     private var macroRecordingSteps: [String] = []
     private var macroReplayTask: Task<Void, Never>?
-    private var isReplayingMacro = false
+    /// Identity of the in-flight replay. A canceled replay only clears shared state
+    /// if its id still matches, so it can't stomp on a newer replay's state.
+    private var activeReplayID: UUID?
+    private var pendingMacroDeletionName: String?
 
     /// Intercepts voice macro commands (record / save / cancel / run / delete / list).
     /// Returns true when the utterance was a macro command (so it must not be sent to
@@ -315,9 +344,21 @@ final class CompanionManager: ObservableObject {
     private func handleSpokenMacroCommand(_ transcript: String) -> Bool {
         // During replay, steps must run as normal prompts — never re-intercepted as
         // macro commands (which would recurse on a "run macro …" step).
-        if isReplayingMacro { return false }
+        if activeReplayID != nil { return false }
 
         let lower = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // A pending macro deletion is awaiting a yes/no confirmation (data-loss guard).
+        if let nameToDelete = pendingMacroDeletionName {
+            pendingMacroDeletionName = nil
+            if Self.confirmationVerdict(for: transcript) == .confirm {
+                SpokenMacroStore.shared.delete(named: nameToDelete)
+                speakSystemMessage("deleted macro \(nameToDelete).")
+            } else {
+                speakSystemMessage("okay, keeping macro \(nameToDelete).")
+            }
+            return true
+        }
 
         // While recording, every utterance is a step unless it's a control phrase.
         if let recordingName = macroRecordingName {
@@ -361,8 +402,14 @@ final class CompanionManager: ObservableObject {
         }
 
         if let name = Self.parseMacroName(from: lower, afterAnyOf: ["delete macro ", "remove macro ", "forget macro "]) {
-            SpokenMacroStore.shared.delete(named: name)
-            speakSystemMessage("deleted macro \(name).")
+            // Deletion is irreversible, so confirm by voice and check it exists first
+            // (a misheard command must not silently destroy a saved workflow).
+            guard let macro = SpokenMacroStore.shared.macro(named: name) else {
+                speakSystemMessage("i don't have a macro called \(name).")
+                return true
+            }
+            pendingMacroDeletionName = macro.name
+            speakSystemMessage("delete macro \(macro.name)? say yes to confirm.")
             return true
         }
 
@@ -390,19 +437,25 @@ final class CompanionManager: ObservableObject {
     /// action will pause for confirmation; deterministic action-replay is a follow-up.
     private func runMacro(_ macro: SpokenMacro) {
         macroReplayTask?.cancel()
+        let replayID = UUID()
+        activeReplayID = replayID
         speakSystemMessage("running macro \(macro.name).")
         macroReplayTask = Task { @MainActor in
-            isReplayingMacro = true
-            defer { isReplayingMacro = false }
+            // Only clear shared replay state if THIS replay is still the active one,
+            // so a late-cancelled replay can't stomp a newer one (OC-101).
+            defer { if activeReplayID == replayID { activeReplayID = nil } }
             for step in macro.steps {
-                guard !Task.isCancelled, macroRecordingName == nil else { break }
+                guard !Task.isCancelled, activeReplayID == replayID, macroRecordingName == nil else { break }
                 sendTranscriptToClaudeWithScreenshot(transcript: step)
-                // Let each step's response + TTS finish before the next (bounded wait).
+                // Await the step's ACTUAL pipeline completion before advancing (don't
+                // infer from timers — that runs steps out of order), then let its TTS
+                // finish playing.
+                await currentResponseTask?.value
+                if Task.isCancelled || activeReplayID != replayID { break }
                 var waitedTicks = 0
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                while (elevenLabsTTSClient.isPlaying || voiceState == .processing), waitedTicks < 60 {
-                    if Task.isCancelled { return }
-                    try? await Task.sleep(nanoseconds: 500_000_000)
+                while elevenLabsTTSClient.isPlaying, waitedTicks < 120 {
+                    if Task.isCancelled || activeReplayID != replayID { return }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
                     waitedTicks += 1
                 }
                 // If a step proposed a confirmable action, pause replay so the next
@@ -796,8 +849,9 @@ final class CompanionManager: ObservableObject {
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
-            // A real push-to-talk interrupts any macro replay in progress.
+            // A real push-to-talk interrupts any macro replay or in-flight watch tick.
             macroReplayTask?.cancel()
+            watchModeTask?.cancel()
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()

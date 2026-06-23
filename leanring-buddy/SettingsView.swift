@@ -537,7 +537,11 @@ struct SettingsView: View {
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textSecondary)
                     Spacer()
-                    Button(action: { oauthManager.signOut(); providerManager.updateProvider() }) {
+                    Button(action: {
+                        oauthManager.signOut()
+                        providerManager.configuration.oauthBoundProvider = nil
+                        providerManager.updateProvider()
+                    }) {
                         Text("Sign out")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundColor(DS.Colors.warningText)
@@ -613,12 +617,26 @@ struct SettingsView: View {
         }
 
         providerManager.configuration.oauthConfig = config
+        // Capture the bound provider BEFORE the round-trip — if the user switches
+        // providers while the web auth session is open, the token must still bind to
+        // the provider that was active when they started sign-in (OC-96).
+        let boundProvider = providerManager.configuration.activeProvider
+        // Only the OpenAI-compatible providers consume an OAuth bearer; signing in
+        // under Worker Proxy would bind a token no provider ever uses.
+        switch boundProvider {
+        case .openRouter, .openClaw, .hermes:
+            break
+        case .workerProxy:
+            oauthSignInError = "Choose OpenRouter, OpenClaw, or Hermes before signing in with OAuth."
+            return
+        }
         oauthSignInError = nil
         isOAuthSigningIn = true
         Task { @MainActor in
             defer { isOAuthSigningIn = false }
             do {
                 try await oauthManager.signIn(config: config)
+                providerManager.configuration.oauthBoundProvider = boundProvider
                 providerManager.updateProvider()
             } catch {
                 oauthSignInError = error.localizedDescription

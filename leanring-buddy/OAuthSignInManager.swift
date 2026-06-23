@@ -43,6 +43,8 @@ enum OAuthSignInError: LocalizedError {
     case notConfigured
     case cancelled
     case noAuthCode
+    case stateMismatch
+    case sessionStartFailed
     case tokenExchangeFailed(String)
 
     var errorDescription: String? {
@@ -50,6 +52,8 @@ enum OAuthSignInError: LocalizedError {
         case .notConfigured: return "OAuth isn't configured (client id + authorize/token URLs)."
         case .cancelled: return "Sign-in was cancelled."
         case .noAuthCode: return "No authorization code was returned."
+        case .stateMismatch: return "The sign-in response didn't match this request (state mismatch)."
+        case .sessionStartFailed: return "Couldn't start the sign-in web session."
         case .tokenExchangeFailed(let detail): return "Token exchange failed (\(detail))."
         }
     }
@@ -63,6 +67,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
     @Published private(set) var isSignedIn: Bool
 
     private var webAuthSession: ASWebAuthenticationSession?
+    private var backgroundRefreshTask: Task<Void, Never>?
 
     private override init() {
         isSignedIn = KeychainManager.retrieve(service: Self.tokenService) != nil
@@ -76,6 +81,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
         }
         let codeVerifier = Self.randomCodeVerifier()
         let codeChallenge = Self.codeChallenge(for: codeVerifier)
+        let state = Self.randomCodeVerifier() // high-entropy, session-bound (OC-98)
 
         var components = URLComponents(url: authorizeBase, resolvingAgainstBaseURL: false)
         var queryItems = components?.queryItems ?? []
@@ -86,6 +92,7 @@ final class OAuthSignInManager: NSObject, ObservableObject {
             URLQueryItem(name: "scope", value: config.scopes),
             URLQueryItem(name: "code_challenge", value: codeChallenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state),
         ])
         components?.queryItems = queryItems
 
@@ -93,6 +100,11 @@ final class OAuthSignInManager: NSObject, ObservableObject {
               let callbackScheme = URL(string: config.redirectURI)?.scheme else {
             throw OAuthSignInError.notConfigured
         }
+
+        // Clear any prior (possibly stuck) session + stale refresh before starting.
+        webAuthSession?.cancel()
+        webAuthSession = nil
+        backgroundRefreshTask?.cancel()
 
         let authorizationCode: String = try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(url: authorizeURL, callbackURLScheme: callbackScheme) { callbackURL, error in
@@ -102,8 +114,19 @@ final class OAuthSignInManager: NSObject, ObservableObject {
                     return
                 }
                 guard let callbackURL,
-                      let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
-                        .queryItems?.first(where: { $0.name == "code" })?.value else {
+                      let items = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems else {
+                    continuation.resume(throwing: OAuthSignInError.noAuthCode)
+                    return
+                }
+                if let oauthError = items.first(where: { $0.name == "error" })?.value {
+                    continuation.resume(throwing: OAuthSignInError.tokenExchangeFailed(oauthError))
+                    return
+                }
+                guard items.first(where: { $0.name == "state" })?.value == state else {
+                    continuation.resume(throwing: OAuthSignInError.stateMismatch)
+                    return
+                }
+                guard let code = items.first(where: { $0.name == "code" })?.value else {
                     continuation.resume(throwing: OAuthSignInError.noAuthCode)
                     return
                 }
@@ -111,9 +134,13 @@ final class OAuthSignInManager: NSObject, ObservableObject {
             }
             session.presentationContextProvider = self
             self.webAuthSession = session
-            session.start()
+            if !session.start() {
+                self.webAuthSession = nil
+                continuation.resume(throwing: OAuthSignInError.sessionStartFailed)
+            }
         }
 
+        webAuthSession = nil
         let tokens = try await exchangeAuthorizationCode(authorizationCode, codeVerifier: codeVerifier, config: config)
         persist(tokens)
     }
@@ -133,13 +160,45 @@ final class OAuthSignInManager: NSObject, ObservableObject {
         return tokens.accessToken
     }
 
-    /// Non-refreshing read of the stored access token, for synchronous provider
-    /// construction. May be expired; the async path above handles refresh.
-    func storedAccessToken() -> String? {
-        loadTokens()?.accessToken
+    /// Stored access token if present AND unexpired; nil otherwise so synchronous
+    /// provider construction falls back to the pasted API key (OC-97). Kicks a
+    /// background refresh when the token is expired so a later build can use it.
+    func validAccessToken() -> String? {
+        guard let tokens = loadTokens() else { return nil }
+        if let expiresAt = tokens.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
+            scheduleBackgroundRefresh(using: tokens)
+            return nil
+        }
+        return tokens.accessToken
+    }
+
+    private func scheduleBackgroundRefresh(using tokens: StoredOAuthTokens) {
+        guard backgroundRefreshTask == nil,
+              let refreshToken = tokens.refreshToken,
+              let config = Self.storedConfig() else { return }
+        backgroundRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.backgroundRefreshTask = nil }
+            guard !Task.isCancelled,
+                  let refreshed = try? await self.refreshTokens(refreshToken: refreshToken, config: config),
+                  !Task.isCancelled else { return }
+            self.persist(refreshed)
+        }
+    }
+
+    /// Reads the OAuth app config persisted by ProviderConfiguration (loose coupling
+    /// via the shared UserDefaults key) so a background refresh has the endpoints.
+    private static func storedConfig() -> OAuthConfig? {
+        guard let data = UserDefaults.standard.data(forKey: "oauthConfig"),
+              let config = try? JSONDecoder().decode(OAuthConfig.self, from: data) else { return nil }
+        return config
     }
 
     func signOut() {
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = nil
+        webAuthSession?.cancel()
+        webAuthSession = nil
         KeychainManager.delete(service: Self.tokenService)
         isSignedIn = false
     }
