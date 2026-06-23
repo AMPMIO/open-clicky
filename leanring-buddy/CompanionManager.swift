@@ -275,7 +275,7 @@ final class CompanionManager: ObservableObject {
     /// to the vision model for an optional brief nudge. Every gate fails closed (skip).
     private func watchModeTick() async {
         guard watchModeStillActive, providerManager.isCurrentProviderReady else {
-            ClickyTelemetry.watchMode.debug("tick skipped ready=\(providerManager.isCurrentProviderReady, privacy: .public) cancelled=\(Task.isCancelled, privacy: .public)")
+            ClickyTelemetry.watchMode.debug("tick skipped ready=\(self.providerManager.isCurrentProviderReady, privacy: .public) cancelled=\(Task.isCancelled, privacy: .public)")
             return
         }
         // OC-99: per-escalation backoff applies to EVERY provider attempt.
@@ -308,7 +308,7 @@ final class CompanionManager: ObservableObject {
         lastWatchEscalationAt = Date()
 
         let labeledImages = [(data: imageData, label: cursorScreen.label)]
-        ClickyTelemetry.watchMode.notice("escalation model=\(selectedModel, privacy: .public)")
+        ClickyTelemetry.watchMode.notice("escalation model=\(self.selectedModel, privacy: .public)")
         let response: (text: String, duration: TimeInterval)
         do {
             response = try await providerManager.currentProvider.chatStreaming(
