@@ -5,6 +5,7 @@
 //  Factory that instantiates the correct LLMProvider based on user configuration.
 //
 
+import Combine
 import Foundation
 
 @MainActor

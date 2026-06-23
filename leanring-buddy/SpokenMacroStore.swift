@@ -12,6 +12,7 @@
 //  deterministic replay is ever needed.
 //
 
+import Combine
 import Foundation
 
 struct SpokenMacro: Codable, Identifiable, Equatable {

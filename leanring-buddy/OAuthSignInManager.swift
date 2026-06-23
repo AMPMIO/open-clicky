@@ -17,6 +17,7 @@
 
 import AppKit
 import AuthenticationServices
+import Combine
 import CryptoKit
 import Foundation
 
