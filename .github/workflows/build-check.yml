@@ -1,0 +1,68 @@
+name: build-check
+
+# Compile-only check on an ISOLATED cloud macOS runner. This never runs on your
+# machine, so it cannot affect local TCC grants — it's the "run the Xcode build
+# without touching your Mac" option, and the red/green status is build telemetry.
+#
+# Cost note: GitHub-hosted macOS minutes bill at ~10x Linux. Triggers are scoped to
+# the feature branches + PRs + manual dispatch (not every push everywhere). For a
+# private repo, watch your included-minutes budget.
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version (objectVersion 77 needs Xcode 16+)
+        run: xcodebuild -version
+
+      - name: Resolve SwiftPM packages (Sparkle, PostHog)
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy
+
+      - name: Build-only compile check (unsigned, throwaway bundle id, never run)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.buildcheck.leanring-buddy \
+            -skipPackagePluginValidation -skipMacroValidation \
+            2>&1 | tee build.log
+
+      - name: Summarize errors + warnings
+        if: always()
+        run: |
+          ERR=$(grep -cE '^/.*: (error|fatal error):' build.log || true); ERR=${ERR:-0}
+          WARN=$(grep -cE '^/.*: warning:' build.log || true); WARN=${WARN:-0}
+          {
+            echo "## Build-check"
+            echo "- Errors: ${ERR}"
+            echo "- Warnings: ${WARN} (Swift 6 concurrency + deprecated onChange are known/non-blocking)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${ERR}" -gt 0 ]; then
+            { echo '```'; grep -E '^/.*: (error|fatal error):' build.log | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7

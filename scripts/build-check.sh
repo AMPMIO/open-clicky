@@ -25,11 +25,15 @@
 #        launches, so the inode/signature TCC remembers is untouched.
 #     3. CODE_SIGNING_ALLOWED=NO produces an UNSIGNED product; never executed, it
 #        never registers with TCC and can't collide with your Xcode build's grants.
+#     4. PRODUCT_BUNDLE_IDENTIFIER is overridden to a THROWAWAY id
+#        (com.buildcheck.leanring-buddy). TCC is keyed by bundle id, so this product
+#        lives in a separate, empty TCC namespace and CANNOT touch the real app's
+#        grants — even in the worst case where it somehow got launched.
 #
-#   RESIDUAL RISK is real only if some copy of the same bundle id at a different
-#   path/signature gets LAUNCHED. Mitigation: NEVER run ./.build-check/...; this
-#   script doesn't, and deletes it on exit. For zero collision risk, prefer the
-#   Xcode GUI build (Cmd+B). Run this only when a terminal compile-check is needed.
+#   With (1)–(4) there is no path by which this build affects the TCC grants of the
+#   app you Cmd+R from Xcode. It still deletes ./.build-check on exit. For a build
+#   that doesn't invoke xcodebuild at all, use the Xcode GUI (Cmd+B) or CI
+#   (.github/workflows/build-check.yml).
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -u
@@ -66,6 +70,7 @@ set +e
   -destination "${DESTINATION}" \
   -derivedDataPath "${DERIVED_DATA}" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+  PRODUCT_BUNDLE_IDENTIFIER=com.buildcheck.leanring-buddy \
   -skipPackagePluginValidation -skipMacroValidation 2>&1 | tee "${RAW_LOG}" | cat
 BUILD_STATUS=${PIPESTATUS[0]}
 set -e
