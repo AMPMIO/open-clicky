@@ -22,7 +22,7 @@
 import os
 
 enum ClickyTelemetry {
-    private static let subsystem = "com.yourcompany.leanring-buddy"
+    private static let subsystem = "com.ampmio.leanring-buddy"
 
     static let handsOn        = Logger(subsystem: subsystem, category: "handsOn")        // F1
     static let screenMemory   = Logger(subsystem: subsystem, category: "screenMemory")   // F2

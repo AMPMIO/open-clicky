@@ -21,7 +21,7 @@
 #
 # CONSOLE.APP ALTERNATIVE
 #   Open /Applications/Utilities/Console.app, pick this Mac under Devices, and in
-#   the search bar type:  subsystem:com.yourcompany.leanring-buddy
+#   the search bar type:  subsystem:com.ampmio.leanring-buddy
 #   Use Action ▸ "Include Info Messages" + "Include Debug Messages" to see .debug
 #   / .info lines (Console hides them by default), then Start streaming. Add
 #   `category:oauth` to the search to scope to one feature. This script is the
@@ -32,7 +32,7 @@ set -u
 # The subsystem MUST equal the value passed to Logger(subsystem:) in
 # ClickyTelemetry, which is the app bundle id. If you change the bundle id, change
 # this too (and the subsystem in ClickyTelemetry.swift).
-SUBSYSTEM="com.yourcompany.leanring-buddy"
+SUBSYSTEM="com.ampmio.leanring-buddy"
 
 LEVEL="debug"     # debug | info | default(notice) — `log` floor for stream/show
 SINCE=""          # if set, switch from live `log stream` to historical `log show`

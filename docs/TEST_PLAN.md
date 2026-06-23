@@ -26,7 +26,7 @@ KEEP_BUILD_CHECK=1 scripts/build-check.sh   # keep ./.build-check for debugging
 
 ### 0.2 TCC trade-off (why this is allowed despite "do NOT run xcodebuild")
 TCC grants (Screen Recording, Accessibility, Microphone, Automation) are keyed to
-the app's signing identity + bundle id (`com.yourcompany.leanring-buddy`) + the
+the app's signing identity + bundle id (`com.ampmio.leanring-buddy`) + the
 on-disk binary. The rule exists because rebuilding the same bundle id with a
 different/ad-hoc/unsigned signature can drop the grants your Xcode-run copy uses.
 `build-check.sh` is the lowest-risk terminal compile-check because it (1) only
@@ -40,7 +40,7 @@ script deletes it at the end). For zero risk, build in the Xcode GUI (Cmd+B).
 
 ### 0.3 Live telemetry — `scripts/monitor.sh`
 Clicky's structured telemetry uses `os.Logger` under subsystem
-`com.yourcompany.leanring-buddy` (one category per feature: `handsOn`,
+`com.ampmio.leanring-buddy` (one category per feature: `handsOn`,
 `screenMemory`, `watchMode`, `liveAudio`, `spokenMacros`, `oauth`,
 `terminalBridge`, plus `pipeline`/`provider`/`build`). Unlike `print()` to
 stdout, `os.Logger` reaches the unified log and is visible even when the app runs
@@ -54,7 +54,7 @@ scripts/monitor.sh --since 10m      # HISTORY of the last 10 min (log show)
 scripts/monitor.sh --since 10m watchMode
 ```
 
-Console.app alternative: search `subsystem:com.yourcompany.leanring-buddy`
+Console.app alternative: search `subsystem:com.ampmio.leanring-buddy`
 (+ `category:oauth` to scope), enable Action ▸ Include Info/Debug Messages.
 
 ### 0.4 Worker telemetry — `wrangler tail`

@@ -12,7 +12,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #   macOS TCC grants (Screen Recording, Accessibility, Microphone, Automation)
 #   are keyed to the app's code-signing identity + bundle id + the binary on disk.
-#   Rebuilding the SAME bundle id (com.yourcompany.leanring-buddy) with a different
+#   Rebuilding the SAME bundle id (com.ampmio.leanring-buddy) with a different
 #   / ad-hoc / unsigned signature can make macOS treat it as a new principal and
 #   DROP the grants your Xcode-run copy relies on. That is the real mechanism
 #   behind "xcodebuild invalidates TCC permissions".
