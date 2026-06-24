@@ -171,6 +171,31 @@ struct SettingsView: View {
                     providerManager.configuration.openRouterAPIKey = newValue
                     providerManager.updateProvider()
                 }
+
+            Text("Model")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            TextField("qwen/qwen3-vl-235b-a22b-instruct", text: Binding(
+                get: { providerManager.configuration.selectedModelID },
+                set: { providerManager.configuration.selectedModelID = $0 }
+            ))
+                .textFieldStyle(.plain)
+                .foregroundColor(DS.Colors.textPrimary)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(DS.Colors.surface2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+            Text("Any OpenRouter model slug — use a VISION model so OpenClicky can see your screen + point (e.g. qwen/qwen3-vl-32b-instruct, z-ai/glm-4.6v).")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
         }
     }
 

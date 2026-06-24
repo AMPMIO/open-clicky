@@ -28,7 +28,7 @@ enum APIProviderType: String, CaseIterable, Codable {
     var defaultModelID: String {
         switch self {
         case .workerProxy: return "claude-sonnet-4-6"
-        case .openRouter: return "anthropic/claude-sonnet-4-6"
+        case .openRouter: return "qwen/qwen3-vl-235b-a22b-instruct"
         case .openClaw: return "anthropic/claude-sonnet-4-6"
         case .hermes: return "hermes-agent"
         }
