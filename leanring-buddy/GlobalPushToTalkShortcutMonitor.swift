@@ -113,21 +113,6 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
 
-        // Diagnostic: every modifier change logs its raw flags + whether the Fn bit
-        // (0x800000) is set, so `scripts/monitor.sh shortcut` shows exactly what the
-        // tap receives when a key is pressed (and whether it gets events at all).
-        if eventType == .flagsChanged {
-            let flags = event.flags.rawValue
-            ClickyTelemetry.shortcut.debug("flagsChanged flags=0x\(String(flags, radix: 16), privacy: .public) fnBit=\((flags & 0x800000) != 0, privacy: .public)")
-        }
-
-        // Also log key presses (keycode only — no characters) so a key that emits a
-        // keyDown instead of a modifier flag (e.g. a Globe/Fn key on some keyboards)
-        // is visible. Diagnostic — remove once the push-to-talk key is settled.
-        if eventType == .keyDown || eventType == .keyUp {
-            ClickyTelemetry.shortcut.debug("\(eventType == .keyDown ? "keyDown" : "keyUp", privacy: .public) keyCode=\(eventKeyCode, privacy: .public)")
-        }
-
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,

@@ -16,6 +16,7 @@ import Speech
 enum BuddyPushToTalkShortcut {
     enum ShortcutOption {
         case functionKey
+        case rightCommand
         case shiftFunction
         case controlOption
         case shiftControl
@@ -26,6 +27,8 @@ enum BuddyPushToTalkShortcut {
             switch self {
             case .functionKey:
                 return "fn"
+            case .rightCommand:
+                return "right ⌘"
             case .shiftFunction:
                 return "shift + fn"
             case .controlOption:
@@ -43,6 +46,8 @@ enum BuddyPushToTalkShortcut {
             switch self {
             case .functionKey:
                 return ["fn"]
+            case .rightCommand:
+                return ["right ⌘"]
             case .shiftFunction:
                 return ["shift", "fn"]
             case .controlOption:
@@ -66,14 +71,14 @@ enum BuddyPushToTalkShortcut {
                 return [.control, .option]
             case .shiftControl:
                 return [.shift, .control]
-            case .controlOptionSpace, .shiftControlSpace:
+            case .rightCommand, .controlOptionSpace, .shiftControlSpace:
                 return nil
             }
         }
 
         fileprivate var spaceShortcutModifierFlags: NSEvent.ModifierFlags? {
             switch self {
-            case .functionKey:
+            case .functionKey, .rightCommand:
                 return nil
             case .shiftFunction:
                 return nil
@@ -101,7 +106,7 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .functionKey
+    static let currentShortcutOption: ShortcutOption = .rightCommand
     static let pushToTalkKeyCode: UInt16 = 49 // Space
     static let pushToTalkDisplayText = currentShortcutOption.displayText
     static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
@@ -127,6 +132,18 @@ enum BuddyPushToTalkShortcut {
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
         guard let shortcutEventType = shortcutEventType(for: eventType) else { return .none }
+
+        // RIGHT ⌘ needs the raw CGEvent device bit (0x10) that NSEvent's
+        // deviceIndependentFlagsMask strips, so left-⌘ shortcuts (⌘C etc.) never
+        // trigger push-to-talk. Bits: 0x100000 = ⌘ mask, 0x08 = left ⌘, 0x10 = right ⌘.
+        if currentShortcutOption == .rightCommand {
+            guard shortcutEventType == .flagsChanged else { return .none }
+            let isRightCommandHeld = (modifierFlagsRawValue & 0x100000) != 0
+                && (modifierFlagsRawValue & 0x10) != 0
+            if isRightCommandHeld && !wasShortcutPreviouslyPressed { return .pressed }
+            if !isRightCommandHeld && wasShortcutPreviouslyPressed { return .released }
+            return .none
+        }
 
         return shortcutTransition(
             for: shortcutEventType,

@@ -697,6 +697,7 @@ final class CompanionManager: ObservableObject {
         accessibilityCheckTimer = nil
         stopWatchModeTimer()
         macroReplayTask?.cancel()
+        deferredStopTask?.cancel()
     }
 
     func refreshAllPermissions() {
@@ -867,76 +868,159 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    // MARK: - Push-to-talk + double-tap-to-latch state
+
+    /// True while recording hands-free (latched on by a double-tap; a single tap stops it).
+    private var isLatchedRecording = false
+    private var stopLatchOnRelease = false
+    private var pressWasDoubleTap = false
+    private var previousReleaseWasQuickTap = false
+    private var lastShortcutPressedAt = Date.distantPast
+    private var shortcutPressedAt = Date.distantPast
+    /// Deferred "stop" after a quick tap — cancelled if a second tap arrives (→ latch).
+    private var deferredStopTask: Task<Void, Never>?
+    private let doubleTapWindow: TimeInterval = 0.4
+    private let holdVsTapThreshold: TimeInterval = 0.35
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
-            guard !buddyDictationManager.isDictationInProgress else { return }
-            // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
-
-            // A real push-to-talk interrupts any macro replay or in-flight watch tick.
-            macroReplayTask?.cancel()
-            watchModeTask?.cancel()
-
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
-
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
-
-            // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
-            // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
-            clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
-
-            ClickyAnalytics.trackPushToTalkStarted()
-
-            pendingKeyboardShortcutStartTask?.cancel()
-            pendingKeyboardShortcutStartTask = Task {
-                await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
-                    currentDraftText: "",
-                    updateDraftText: { _ in
-                        // Partial transcripts are hidden (waveform-only UI)
-                    },
-                    submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
-                    }
-                )
-            }
+            handleShortcutPressed()
         case .released:
-            // Cancel the pending start task in case the user released the shortcut
-            // before the async startPushToTalk had a chance to begin recording.
-            // Without this, a quick press-and-release drops the release event and
-            // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
-            pendingKeyboardShortcutStartTask?.cancel()
-            pendingKeyboardShortcutStartTask = nil
-            buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            handleShortcutReleased()
         case .none:
             break
+        }
+    }
+
+    private func handleShortcutPressed() {
+        // A new press cancels a deferred stop — it means a second tap arrived.
+        deferredStopTask?.cancel()
+        deferredStopTask = nil
+
+        let now = Date()
+        let sinceLastPress = now.timeIntervalSince(lastShortcutPressedAt)
+        lastShortcutPressedAt = now
+        shortcutPressedAt = now
+
+        // While recording hands-free (latched), a tap STOPS it on release.
+        if isLatchedRecording {
+            stopLatchOnRelease = true
+            return
+        }
+
+        // A second quick tap (right after another quick tap) toggles the hands-free latch.
+        pressWasDoubleTap = sinceLastPress < doubleTapWindow && previousReleaseWasQuickTap
+
+        // Start a fresh recording only if one isn't already running (the first tap of a
+        // double-tap already started it, and the deferred stop kept it alive).
+        if !buddyDictationManager.isDictationInProgress {
+            beginPushToTalkRecording()
+        }
+    }
+
+    private func handleShortcutReleased() {
+        ClickyAnalytics.trackPushToTalkReleased()
+
+        if isLatchedRecording {
+            if stopLatchOnRelease {
+                stopLatchOnRelease = false
+                isLatchedRecording = false
+                stopAndSubmitRecording()
+            }
+            // Otherwise: latched + key released → keep recording hands-free.
+            return
+        }
+
+        let holdDuration = Date().timeIntervalSince(shortcutPressedAt)
+        let wasQuickTap = holdDuration < holdVsTapThreshold
+        previousReleaseWasQuickTap = wasQuickTap
+
+        // Second tap of a double-tap → latch hands-free instead of stopping.
+        if pressWasDoubleTap {
+            pressWasDoubleTap = false
+            isLatchedRecording = true
+            return
+        }
+
+        if wasQuickTap {
+            // A quick tap might be the first of a double-tap. Defer the stop briefly; a
+            // second tap within the window cancels this and latches instead.
+            deferredStopTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(nanoseconds: UInt64(self.doubleTapWindow * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self.stopAndSubmitRecording()
+            }
+        } else {
+            // A hold → normal push-to-talk stop + send.
+            stopAndSubmitRecording()
+        }
+    }
+
+    /// Cancels the pending start (handles a quick press-release that beat the async
+    /// start) and finalizes the dictation, which submits the transcript.
+    private func stopAndSubmitRecording() {
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+    }
+
+    private func beginPushToTalkRecording() {
+        guard !buddyDictationManager.isDictationInProgress else { return }
+        // Don't register push-to-talk while the onboarding video is playing
+        guard !showOnboardingVideo else { return }
+
+        // A real push-to-talk interrupts any macro replay or in-flight watch tick.
+        macroReplayTask?.cancel()
+        watchModeTask?.cancel()
+
+        // Cancel any pending transient hide so the overlay stays visible
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        // If the cursor is hidden, bring it back transiently for this interaction
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        // Dismiss the menu bar panel so it doesn't cover the screen
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        // Cancel any in-progress response and TTS from a previous utterance
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+
+        // Dismiss the onboarding prompt if it's showing
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+
+        ClickyAnalytics.trackPushToTalkStarted()
+
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = Task {
+            await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
+                currentDraftText: "",
+                updateDraftText: { _ in
+                    // Partial transcripts are hidden (waveform-only UI)
+                },
+                submitDraftText: { [weak self] finalTranscript in
+                    self?.lastTranscript = finalTranscript
+                    print("🗣️ Companion received transcript: \(finalTranscript)")
+                    ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                    self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                }
+            )
         }
     }
 
