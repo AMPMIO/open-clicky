@@ -156,6 +156,7 @@ struct SettingsView: View {
 
             SecureField("sk-or-...", text: $openRouterKeyInput)
                 .textFieldStyle(.plain)
+                .foregroundColor(DS.Colors.textPrimary)
                 .font(.system(size: 12, design: .monospaced))
                 .padding(8)
                 .background(
@@ -310,6 +311,7 @@ struct SettingsView: View {
 
             TextField("https://your-worker.workers.dev", text: $workerURLInput)
                 .textFieldStyle(.plain)
+                .foregroundColor(DS.Colors.textPrimary)
                 .font(.system(size: 12, design: .monospaced))
                 .padding(8)
                 .background(
@@ -416,6 +418,7 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     TextField("Exclude an app by name…", text: $excludeAppInput)
                         .textFieldStyle(.plain)
+                        .foregroundColor(DS.Colors.textPrimary)
                         .font(.system(size: 10))
                         .padding(6)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface2))
@@ -584,6 +587,7 @@ struct SettingsView: View {
     private func oauthField(_ placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text)
             .textFieldStyle(.plain)
+            .foregroundColor(DS.Colors.textPrimary)
             .font(.system(size: 10))
             .padding(6)
             .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface2))
@@ -766,6 +770,7 @@ struct AgentEndpointSettingsView: View {
 
                 TextField(endpointPlaceholder, text: $endpoint)
                     .textFieldStyle(.plain)
+                    .foregroundColor(DS.Colors.textPrimary)
                     .font(.system(size: 12, design: .monospaced))
                     .padding(8)
                     .background(
@@ -792,6 +797,7 @@ struct AgentEndpointSettingsView: View {
 
                 SecureField("Token", text: $token)
                     .textFieldStyle(.plain)
+                    .foregroundColor(DS.Colors.textPrimary)
                     .font(.system(size: 12, design: .monospaced))
                     .padding(8)
                     .background(
