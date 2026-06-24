@@ -328,9 +328,11 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
+            // Eye-in-speech-bubble companion (replaces the blue triangle) — keeps
+            // the rotation (faces travel direction), swoop scale, blue glow, and
+            // bezier flight animation. Codepoints U+1F441 U+FE0F U+200D U+1F5E8 U+FE0F.
+            Text("\u{1F441}\u{FE0F}\u{200D}\u{1F5E8}\u{FE0F}")
+                .font(.system(size: 22))
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
