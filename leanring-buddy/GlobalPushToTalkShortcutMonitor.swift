@@ -11,6 +11,7 @@ import AppKit
 import Combine
 import CoreGraphics
 import Foundation
+import os
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
@@ -63,6 +64,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             print("⚠️ Global push-to-talk: couldn't create CGEvent tap")
+            ClickyTelemetry.shortcut.error("couldn't create CGEvent tap — grant OpenClicky Accessibility AND Input Monitoring in System Settings ▸ Privacy")
             return
         }
 
@@ -81,6 +83,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
+        ClickyTelemetry.shortcut.notice("event tap started — listening for \(BuddyPushToTalkShortcut.pushToTalkDisplayText, privacy: .public)")
     }
 
     func stop() {
@@ -109,6 +112,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+
+        // Diagnostic: every modifier change logs its raw flags + whether the Fn bit
+        // (0x800000) is set, so `scripts/monitor.sh shortcut` shows exactly what the
+        // tap receives when a key is pressed (and whether it gets events at all).
+        if eventType == .flagsChanged {
+            let flags = event.flags.rawValue
+            ClickyTelemetry.shortcut.debug("flagsChanged flags=0x\(String(flags, radix: 16), privacy: .public) fnBit=\((flags & 0x800000) != 0, privacy: .public)")
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,
@@ -120,9 +132,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .none:
             break
         case .pressed:
+            ClickyTelemetry.shortcut.notice("push-to-talk PRESSED (\(BuddyPushToTalkShortcut.pushToTalkDisplayText, privacy: .public))")
             isShortcutCurrentlyPressed = true
             shortcutTransitionPublisher.send(.pressed)
         case .released:
+            ClickyTelemetry.shortcut.notice("push-to-talk RELEASED")
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
         }

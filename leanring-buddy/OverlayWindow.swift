@@ -135,9 +135,9 @@ struct BlueCursorView: View {
     /// The buddy's current behavioral mode (following cursor, navigating, or pointing).
     @State private var buddyNavigationMode: BuddyNavigationMode = .followingCursor
 
-    /// The rotation angle of the triangle in degrees. Default is -35° (cursor-like).
-    /// Changes to face the direction of travel when navigating to a target.
-    @State private var triangleRotationDegrees: Double = -35.0
+    /// The companion's rotation in degrees. Default 0° (upright at rest); changes to
+    /// face the direction of travel during a flight, then returns to upright.
+    @State private var triangleRotationDegrees: Double = 0.0
 
     /// Speech bubble text shown when pointing at a detected element.
     @State private var navigationBubbleText: String = ""
@@ -602,8 +602,8 @@ struct BlueCursorView: View {
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
 
-        // Rotate back to default pointer angle now that we've arrived
-        triangleRotationDegrees = -35.0
+        // Return to upright now that we've arrived
+        triangleRotationDegrees = 0.0
 
         // Start the pulsing halo. Reset to the collapsed state first, then kick
         // off a repeating animation that breathes the ring out and back
@@ -705,7 +705,7 @@ struct BlueCursorView: View {
         navigationAnimationTimer = nil
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
-        triangleRotationDegrees = -35.0
+        triangleRotationDegrees = 0.0
         buddyFlightScale = 1.0
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0

@@ -31,6 +31,7 @@ enum ClickyTelemetry {
     static let spokenMacros   = Logger(subsystem: subsystem, category: "spokenMacros")    // F5
     static let oauth          = Logger(subsystem: subsystem, category: "oauth")           // F6
     static let terminalBridge = Logger(subsystem: subsystem, category: "terminalBridge")  // F7
+    static let shortcut       = Logger(subsystem: subsystem, category: "shortcut")        // push-to-talk key tap
     static let pipeline       = Logger(subsystem: subsystem, category: "pipeline")        // voice→screenshot→LLM→TTS
     static let provider       = Logger(subsystem: subsystem, category: "provider")        // provider selection / build
     static let build          = Logger(subsystem: subsystem, category: "build")           // reserved for build-time diagnostics
