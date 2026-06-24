@@ -121,6 +121,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             ClickyTelemetry.shortcut.debug("flagsChanged flags=0x\(String(flags, radix: 16), privacy: .public) fnBit=\((flags & 0x800000) != 0, privacy: .public)")
         }
 
+        // Also log key presses (keycode only — no characters) so a key that emits a
+        // keyDown instead of a modifier flag (e.g. a Globe/Fn key on some keyboards)
+        // is visible. Diagnostic — remove once the push-to-talk key is settled.
+        if eventType == .keyDown || eventType == .keyUp {
+            ClickyTelemetry.shortcut.debug("\(eventType == .keyDown ? "keyDown" : "keyUp", privacy: .public) keyCode=\(eventKeyCode, privacy: .public)")
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,
