@@ -234,10 +234,9 @@ struct SurfaceView: View {
 
     /// A compact live list of the most recent agent runs (G5). Shows the 3 newest,
     /// each as a stage-colored dot + title + stage label, or a quiet empty state.
-    @ViewBuilder
     private var recentRuns: some View {
-        let runs = agentRunManager.runs.prefix(3)
-        VStack(alignment: .leading, spacing: 5) {
+        let runs = Array(agentRunManager.runs.prefix(3))
+        return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text("Agent runs")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -253,7 +252,7 @@ struct SurfaceView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(runs) { run in
+                ForEach(runs, id: \.id) { run in
                     HStack(spacing: 6) {
                         Circle().fill(run.stage.indicatorColor).frame(width: 6, height: 6)
                         Text(run.title)

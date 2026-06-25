@@ -23,7 +23,7 @@ struct AgentsPanel: View {
         } else {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(agentRunManager.runs) { run in
+                    ForEach(agentRunManager.runs, id: \.id) { run in
                         AgentRunCard(run: run)
                     }
                 }
@@ -110,10 +110,13 @@ struct AgentRunCard: View {
     }
 
     private var logLinesView: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            // Show the most recent lines (the tail is what matters for status).
-            ForEach(Array(run.logLines.suffix(maximumVisibleLogLines).enumerated()), id: \.offset) { _, line in
-                Text(line)
+        // Show the most recent lines (the tail is what matters for status). Index
+        // into a concrete array by position so identity is unambiguous — log lines
+        // are plain strings and may repeat, so `\.self` isn't safe as an id.
+        let visibleLogLines = Array(run.logLines.suffix(maximumVisibleLogLines))
+        return VStack(alignment: .leading, spacing: 3) {
+            ForEach(visibleLogLines.indices, id: \.self) { lineIndex in
+                Text(visibleLogLines[lineIndex])
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
