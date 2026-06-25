@@ -166,17 +166,37 @@ enum CircleToPointGesture {
         return max(box.width, box.height) >= minimumBoundingSizeInPoints
     }
 
-    /// Center of the gesture, used to pick which screen's screenshot to annotate when the
-    /// user has multiple monitors.
-    static func centerGlobalPoint(ofGlobalPoints globalPoints: [CGPoint]) -> CGPoint {
-        let box = boundingBox(ofPoints: globalPoints)
-        return CGPoint(x: box.midX, y: box.midY)
+    /// Picks which captured screen to annotate by PATH-POINT MASS: the display containing
+    /// the most recorded gesture points. This is robust where a bounding-box center would
+    /// fail — a loop whose center lands in inter-display dead space, or a crescent / seam-
+    /// straddling loop whose center falls on the wrong monitor. Ties, and the case where no
+    /// display contains any point, both fall back to the cursor screen.
+    static func targetCaptureIndex(forGlobalPath globalPoints: [CGPoint],
+                                   in captures: [CompanionScreenCapture]) -> Int? {
+        guard !captures.isEmpty else { return nil }
+        var pointCountByCaptureIndex = [Int](repeating: 0, count: captures.count)
+        for point in globalPoints {
+            if let index = captures.firstIndex(where: { $0.displayFrame.contains(point) }) {
+                pointCountByCaptureIndex[index] += 1
+            }
+        }
+        let mostPoints = pointCountByCaptureIndex.max() ?? 0
+        if mostPoints > 0 {
+            let tiedIndices = pointCountByCaptureIndex.indices.filter { pointCountByCaptureIndex[$0] == mostPoints }
+            // Among displays tied for the most points, prefer the cursor screen.
+            return tiedIndices.first(where: { captures[$0].isCursorScreen }) ?? tiedIndices.first
+        }
+        // No display contains any recorded point — fall back to the cursor screen.
+        return captures.firstIndex(where: { $0.isCursorScreen })
     }
 
     /// Draws the freehand loop onto a copy of `capture`'s screenshot and returns new JPEG
     /// data at the SAME pixel dimensions as the original — so the "image is N×M pixels"
     /// label and Claude's [POINT] coordinate space both stay valid. Returns nil on failure
     /// (caller then sends the unannotated screenshot).
+    ///
+    /// ponytail: synchronous decode + draw + JPEG re-encode (~1280px), so callers invoke it
+    /// on the MainActor today. Brief, correctness-fine; off-main encoding tracked in OC-116.
     ///
     /// Coordinate handling: the gesture points and `displayFrame` are both in global AppKit
     /// space (bottom-left origin), and we draw into a bottom-left bitmap context, so the
@@ -209,11 +229,17 @@ enum CircleToPointGesture {
 
         let pixelsPerPointX = CGFloat(pixelWidth) / displayFrame.width
         let pixelsPerPointY = CGFloat(pixelHeight) / displayFrame.height
-        let pixelPoints = globalPoints.map { globalPoint in
-            CGPoint(
-                x: (globalPoint.x - displayFrame.origin.x) * pixelsPerPointX,
-                y: (globalPoint.y - displayFrame.origin.y) * pixelsPerPointY
-            )
+        // Map each global point into screenshot pixel space, clamping to the bitmap bounds.
+        // A seam-straddling gesture can produce points beyond this display; clamping keeps
+        // the ring on-image instead of drawing off-canvas.
+        var didClampAnyPoint = false
+        let pixelPoints = globalPoints.map { globalPoint -> CGPoint in
+            let rawX = (globalPoint.x - displayFrame.origin.x) * pixelsPerPointX
+            let rawY = (globalPoint.y - displayFrame.origin.y) * pixelsPerPointY
+            let clampedX = min(max(rawX, 0), CGFloat(pixelWidth))
+            let clampedY = min(max(rawY, 0), CGFloat(pixelHeight))
+            if clampedX != rawX || clampedY != rawY { didClampAnyPoint = true }
+            return CGPoint(x: clampedX, y: clampedY)
         }
 
         guard let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
@@ -233,8 +259,11 @@ enum CircleToPointGesture {
         for point in pixelPoints.dropFirst() {
             ringPath.line(to: point)
         }
-        // Close the freehand loop so it reads as a ring around the region.
-        ringPath.close()
+        // Close the loop into a ring — but only when the whole path stayed on-image.
+        // Closing a clamped/clipped path would draw a slashing chord across the screenshot.
+        if !didClampAnyPoint {
+            ringPath.close()
+        }
 
         NSColor(srgbRed: 0.20, green: 0.55, blue: 1.0, alpha: 0.95).setStroke()
         ringPath.stroke()

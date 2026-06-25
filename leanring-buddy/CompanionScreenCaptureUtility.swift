@@ -11,9 +11,7 @@ import AppKit
 import ScreenCaptureKit
 
 struct CompanionScreenCapture {
-    // var (not let) so the companion send path can replace this with a copy annotated
-    // with the user's circle-to-point gesture (G8 / OC-107) before sending to Claude.
-    var imageData: Data
+    let imageData: Data
     let label: String
     let isCursorScreen: Bool
     let displayWidthInPoints: Int

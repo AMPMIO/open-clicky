@@ -24,7 +24,18 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
-    @Published private(set) var voiceState: CompanionVoiceState = .idle
+    @Published private(set) var voiceState: CompanionVoiceState = .idle {
+        didSet {
+            // G8 (OC-107): whenever a recording ends — voiceState leaves .listening for any
+            // reason (submit, recognition error, cancel, provider reload) — make sure the
+            // circle-gesture overlay is no longer swallowing the mouse. This does NOT consume
+            // a pending gesture; the normal submit path already collected it before this runs.
+            if oldValue == .listening && voiceState != .listening {
+                cancelCircleGestureWatchdog()
+                overlayWindowManager.disarmAndDiscardCircleGestureCapture()
+            }
+        }
+    }
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
@@ -161,6 +172,9 @@ final class CompanionManager: ObservableObject {
         )
         // Rebuild the dictation manager's provider so the next push-to-talk uses it.
         buddyDictationManager.reloadTranscriptionProviderFromUserSelection()
+        // G8 (OC-107): changing the STT provider can tear down an in-flight dictation, so
+        // make sure the circle-gesture overlay isn't left armed.
+        forceDisarmCircleGesture()
         ClickyTelemetry.pipeline.notice("STT provider changed to \(provider.rawValue, privacy: .public)")
     }
 
@@ -409,6 +423,36 @@ final class CompanionManager: ObservableObject {
     private static let circleToPointInstructions = """
     the user drew a freehand circle directly on their screen to point at something — it is marked with a bright blue ring in the screenshot. treat that ring as 'this' or 'here' in their request and focus your answer on whatever is inside it. the ring is an annotation the user added in order to point, not part of their actual screen content, so don't describe the ring itself.
     """
+
+    /// Backstop timer for the circle-gesture overlay: if a push-to-talk key-up is ever lost
+    /// (e.g. the CGEvent tap was disabled mid-hold), this force-disarms so the overlay can't
+    /// stay swallowing the mouse. Cancelled the moment a normal release arrives.
+    private var circleGestureWatchdogTask: Task<Void, Never>?
+
+    /// Arms circle-to-point capture and starts the max-hold watchdog.
+    private func armCircleGestureCaptureWithWatchdog() {
+        overlayWindowManager.armCircleGestureCapture()
+        circleGestureWatchdogTask?.cancel()
+        circleGestureWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            ClickyTelemetry.pipeline.info("circle-gesture watchdog fired — force-disarming overlay")
+            self.forceDisarmCircleGesture()
+        }
+    }
+
+    private func cancelCircleGestureWatchdog() {
+        circleGestureWatchdogTask?.cancel()
+        circleGestureWatchdogTask = nil
+    }
+
+    /// Restores click-through on every overlay, cancels the watchdog, and drops any pending
+    /// gesture. Idempotent — safe to call from any recording-aborting path.
+    private func forceDisarmCircleGesture() {
+        cancelCircleGestureWatchdog()
+        pendingCircleGesturePoints = nil
+        overlayWindowManager.disarmAndDiscardCircleGestureCapture()
+    }
 
     // MARK: - Spoken Macros (F5)
 
@@ -759,7 +803,7 @@ final class CompanionManager: ObservableObject {
         // G8 (OC-107): explicitly restore click-through before tearing down the overlay so
         // deactivating the companion can never leave a window swallowing the user's mouse,
         // independent of how hideOverlay disposes of its windows.
-        overlayWindowManager.disarmAndDiscardCircleGestureCapture()
+        forceDisarmCircleGesture()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
@@ -1022,7 +1066,7 @@ final class CompanionManager: ObservableObject {
             isLatchedRecording = true
             // G8 (OC-107): hands-free latched recording must not keep swallowing the
             // mouse, so drop gesture capture (and any partial drag) for this session.
-            overlayWindowManager.disarmAndDiscardCircleGestureCapture()
+            forceDisarmCircleGesture()
             return
         }
 
@@ -1047,8 +1091,10 @@ final class CompanionManager: ObservableObject {
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = nil
         // G8 (OC-107): grab any circle-this gesture drawn during the hold BEFORE the
-        // transcript submits, so the send path can annotate the screenshot with it.
+        // transcript submits, so the send path can annotate the screenshot with it. The
+        // collect restores click-through; cancel the watchdog now that the hold has ended.
         pendingCircleGesturePoints = overlayWindowManager.collectAndDisarmCircleGestureCapture()
+        cancelCircleGestureWatchdog()
         buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
     }
 
@@ -1073,9 +1119,9 @@ final class CompanionManager: ObservableObject {
         }
 
         // G8 (OC-107): arm circle-to-point capture so a left-drag during this push-to-talk
-        // hold is recorded as a "what's this?" region. The overlay only intercepts the
-        // mouse while armed; collectAndDisarm / disarmAndDiscard restore click-through.
-        overlayWindowManager.armCircleGestureCapture()
+        // hold is recorded as a "what's this?" region. The overlay only intercepts the mouse
+        // while armed; a watchdog force-disarms if the key-up is ever lost.
+        armCircleGestureCaptureWithWatchdog()
 
         // Dismiss the menu bar panel so it doesn't cover the screen
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
@@ -1238,35 +1284,43 @@ final class CompanionManager: ObservableObject {
 
             do {
                 // Capture all connected screens so the AI has full context
-                var screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
                 ClickyTelemetry.pipeline.info("capture done screens=\(screenCaptures.count, privacy: .public)")
 
                 guard !Task.isCancelled else { return }
 
-                // G8 (OC-107): if the user circled a region during push-to-talk, draw that
-                // freehand loop onto the matching screenshot so Claude sees exactly what
-                // "this" refers to. didAnnotateCircleGesture drives the system-prompt hint.
+                // G8 (OC-107): if the user circled a region during push-to-talk, render that
+                // freehand loop onto a COPY of the matching screenshot for the outgoing request
+                // only. screenCaptures itself is never mutated, so the clean image still flows
+                // to Screen Memory (recordTurn) — no stale ring surfaces on a later recall.
                 var didAnnotateCircleGesture = false
+                var circleAnnotatedScreenIndex: Int?
+                var circleAnnotatedImageData: Data?
                 if let circleGesturePoints = pendingCircleGesturePoints {
                     pendingCircleGesturePoints = nil
-                    if CircleToPointGesture.isQualifyingGesture(circleGesturePoints) {
-                        let gestureCenter = CircleToPointGesture.centerGlobalPoint(ofGlobalPoints: circleGesturePoints)
-                        if let targetScreenIndex = screenCaptures.firstIndex(where: { $0.displayFrame.contains(gestureCenter) }),
-                           let annotatedImageData = CircleToPointGesture.annotatedScreenshot(
-                               of: screenCaptures[targetScreenIndex], withGlobalPath: circleGesturePoints) {
-                            screenCaptures[targetScreenIndex].imageData = annotatedImageData
-                            didAnnotateCircleGesture = true
-                            ClickyTelemetry.pipeline.info("circle-to-point annotation applied screenIndex=\(targetScreenIndex, privacy: .public)")
-                        }
+                    if CircleToPointGesture.isQualifyingGesture(circleGesturePoints),
+                       let targetScreenIndex = CircleToPointGesture.targetCaptureIndex(
+                           forGlobalPath: circleGesturePoints, in: screenCaptures),
+                       let annotatedImageData = CircleToPointGesture.annotatedScreenshot(
+                           of: screenCaptures[targetScreenIndex], withGlobalPath: circleGesturePoints) {
+                        circleAnnotatedScreenIndex = targetScreenIndex
+                        circleAnnotatedImageData = annotatedImageData
+                        didAnnotateCircleGesture = true
+                        ClickyTelemetry.pipeline.info("circle-to-point annotation applied screenIndex=\(targetScreenIndex, privacy: .public)")
                     }
                 }
 
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
+                var labeledImages = screenCaptures.map { capture in
                     let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
+                }
+                // G8 (OC-107): swap in the ringed copy for the circled screen — outgoing
+                // request only; screenCaptures (and thus Screen Memory) keep the clean image.
+                if let circleAnnotatedScreenIndex, let circleAnnotatedImageData {
+                    labeledImages[circleAnnotatedScreenIndex].data = circleAnnotatedImageData
                 }
 
                 // Pass conversation history so Claude remembers prior exchanges
