@@ -8,8 +8,10 @@
 //
 
 import AppKit
+import AudioToolbox
 import AVFoundation
 import Combine
+import CoreAudio
 import Foundation
 import os
 import Speech
@@ -254,6 +256,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var isFinalizingTranscript = false
     @Published private(set) var isPreparingToRecord = false
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
+    /// True while the Settings "test microphone" meter is actively capturing input level
+    /// (independent of a real dictation session). Drives the meter's start/stop affordance.
+    @Published private(set) var isMonitoringInputLevelForTest = false
     @Published private(set) var recordedAudioPowerHistory = Array(
         repeating: BuddyDictationManager.recordedAudioPowerHistoryBaselineLevel,
         count: BuddyDictationManager.recordedAudioPowerHistoryLength
@@ -422,6 +427,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         shouldAutomaticallySubmitFinalDraftOnStop: Bool
     ) async {
         guard !isDictationInProgress else { return }
+
+        // Free the shared audio engine if the Settings "test microphone" meter is running —
+        // dictation and the test meter use the same engine and must not capture at once.
+        stopInputLevelMonitoringForTest()
 
         print("🎙️ BuddyDictationManager: start requested (\(startSource))")
 
@@ -642,6 +651,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
 
         let inputNode = audioEngine.inputNode
+        // Route capture through the user's chosen microphone (if any) before reading the
+        // input format — switching the device changes the hardware format the tap binds to,
+        // so it has to happen before `outputFormat` is read and the tap is installed.
+        applySelectedInputDeviceToAudioEngine()
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
         // Capture THIS session strongly for the real-time audio tap instead of
@@ -983,4 +996,241 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         return fallback
     }
+
+    // MARK: - Microphone input device selection (OC-109)
+
+    /// UserDefaults key holding the CoreAudio UID of the user's chosen input device.
+    /// A missing/empty value means "follow the system default input device".
+    private static let selectedInputDeviceUIDDefaultsKey = "selectedMicrophoneInputDeviceUID"
+
+    /// The CoreAudio UID of the user's chosen microphone, or nil to follow the system
+    /// default. The UID (not the numeric AudioDeviceID) is persisted because the UID is
+    /// stable across reboots and reconnects, while the AudioDeviceID is reassigned freely.
+    static var selectedInputDeviceUID: String? {
+        get {
+            let storedValue = UserDefaults.standard.string(forKey: selectedInputDeviceUIDDefaultsKey)
+            return (storedValue?.isEmpty == true) ? nil : storedValue
+        }
+        set {
+            if let newValue, !newValue.isEmpty {
+                UserDefaults.standard.set(newValue, forKey: selectedInputDeviceUIDDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedInputDeviceUIDDefaultsKey)
+            }
+        }
+    }
+
+    /// All microphones the user can pick, discovered via CoreAudio (built-in mic, USB
+    /// interfaces, Bluetooth headsets, and virtual input devices all appear here). The same
+    /// enumeration resolves a persisted UID back to a live AudioDeviceID at capture time, so
+    /// the picker and the apply path can never disagree about which devices exist.
+    static func availableMicrophoneInputDevices() -> [AvailableMicrophoneInputDevice] {
+        return systemAudioDeviceIDs().compactMap { deviceID in
+            guard audioDeviceHasInputStreams(deviceID),
+                  let uniqueID = audioDeviceStringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  let localizedName = audioDeviceStringProperty(deviceID, selector: kAudioObjectPropertyName)
+            else { return nil }
+            return AvailableMicrophoneInputDevice(uniqueID: uniqueID, localizedName: localizedName)
+        }
+    }
+
+    /// Tracks whether the engine's input unit is currently bound to a specific (non-default)
+    /// device. Lets us leave the well-tested system-default capture path completely untouched
+    /// until the user actually picks a custom mic, and know when a later switch back to the
+    /// default must actively rebind the long-lived unit.
+    private var hasBoundCustomInputDevice = false
+
+    /// Routes the engine's input node through the user's chosen microphone, or back to the
+    /// current system default when the chosen mic is gone / "System Default" is selected after
+    /// a custom one. Must run while the engine is stopped and before the tap is installed,
+    /// because changing the device changes the input format the tap binds to.
+    private func applySelectedInputDeviceToAudioEngine() {
+        let selectedUID = Self.selectedInputDeviceUID
+        let resolvedCustomDeviceID = selectedUID.flatMap { Self.audioDeviceID(forUID: $0) }
+
+        let targetDeviceID: AudioDeviceID?
+        let willBindCustomDevice: Bool
+        if let resolvedCustomDeviceID {
+            targetDeviceID = resolvedCustomDeviceID
+            willBindCustomDevice = true
+        } else {
+            // No custom mic resolved — either nothing is selected, or the selected one is
+            // absent. If we never bound a custom device this launch, the input unit is still
+            // on the system default, so leave that path entirely alone. Only when we *did*
+            // previously bind a custom device must we actively rebind to the current default:
+            // the input unit is long-lived, so otherwise it stays stuck on the old/absent
+            // device and capture breaks instead of degrading to built-in. (Finding #2.)
+            guard hasBoundCustomInputDevice else { return }
+            if let selectedUID {
+                print("🎙️ BuddyDictationManager: selected mic \(selectedUID) not present — reverting to system default input")
+            }
+            targetDeviceID = Self.defaultInputDeviceID()
+            willBindCustomDevice = false
+        }
+        // No resolvable device at all (not even a default) — let AVAudioEngine pick on its own
+        // rather than forcing device 0.
+        guard let targetDeviceID else { return }
+        guard let inputAudioUnit = audioEngine.inputNode.audioUnit else { return }
+
+        // kAudioOutputUnitProperty_CurrentDevice can only be set while the AUHAL is
+        // UNINITIALIZED. audioEngine is long-lived and audioEngine.stop() stops the graph but
+        // does NOT uninitialize the input unit, so on the 2nd+ session the set would return
+        // kAudioUnitErr_Initialized (-10849) and be silently ignored — device switching would
+        // take effect only once per launch. Uninitialize first; AVAudioEngine re-initializes
+        // the unit on the next prepare()/start(). (Adversarial-review finding #1.)
+        AudioUnitUninitialize(inputAudioUnit)
+
+        var mutableDeviceID = targetDeviceID
+        let status = AudioUnitSetProperty(
+            inputAudioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &mutableDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status != noErr {
+            print("🎙️ BuddyDictationManager: failed to set input device \(targetDeviceID) (OSStatus \(status))")
+            return
+        }
+        hasBoundCustomInputDevice = willBindCustomDevice
+    }
+
+    /// The system's current default input device, used as the fallback when no specific mic
+    /// is selected or the selected one is absent.
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceID
+        )
+        guard status == noErr, deviceID != 0 else { return nil }
+        return deviceID
+    }
+
+    // MARK: Test microphone level meter
+
+    /// Starts a lightweight capture that only drives the published audio power level (no
+    /// transcription), so the Settings "test microphone" meter can confirm the chosen device
+    /// is picking up sound. No-op if a real dictation session is active — they share one
+    /// audio engine and must not capture at once.
+    func startInputLevelMonitoringForTest() {
+        guard !isDictationInProgress, !isMonitoringInputLevelForTest else { return }
+        Task { @MainActor in
+            guard await requestMicrophonePermissionIfNeeded() else { return }
+            // Re-check after the await: the user may have started dictation in the meantime.
+            guard !isDictationInProgress, !isMonitoringInputLevelForTest else { return }
+
+            currentAudioPowerLevel = 0
+            recordedAudioPowerHistory = Array(
+                repeating: Self.recordedAudioPowerHistoryBaselineLevel,
+                count: Self.recordedAudioPowerHistoryLength
+            )
+
+            let inputNode = audioEngine.inputNode
+            applySelectedInputDeviceToAudioEngine()
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                self?.updateAudioPowerLevel(from: buffer)
+            }
+            audioEngine.prepare()
+            do {
+                try audioEngine.start()
+                isMonitoringInputLevelForTest = true
+            } catch {
+                inputNode.removeTap(onBus: 0)
+                print("🎙️ BuddyDictationManager: failed to start test mic monitoring: \(error)")
+            }
+        }
+    }
+
+    /// Tears down the test-meter capture and resets the level. Safe to call when not
+    /// monitoring. Called when the Settings mic section closes and before any real session.
+    func stopInputLevelMonitoringForTest() {
+        guard isMonitoringInputLevelForTest else { return }
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        isMonitoringInputLevelForTest = false
+        currentAudioPowerLevel = 0
+    }
+
+    // MARK: CoreAudio property helpers
+
+    /// The AudioDeviceIDs of every audio device the system currently exposes.
+    private static func systemAudioDeviceIDs() -> [AudioDeviceID] {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize
+        ) == noErr else { return [] }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs
+        ) == noErr else { return [] }
+        return deviceIDs
+    }
+
+    /// Whether a device has at least one input stream — i.e. it can be a microphone, not a
+    /// pure output device like speakers.
+    private static func audioDeviceHasInputStreams(_ deviceID: AudioDeviceID) -> Bool {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize) == noErr else {
+            return false
+        }
+        return dataSize > 0
+    }
+
+    /// Reads a CFString device property (UID, name) as a Swift String.
+    private static func audioDeviceStringProperty(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) -> String? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var stringValue: Unmanaged<CFString>?
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, &stringValue)
+        guard status == noErr, let stringValue else { return nil }
+        // AudioObjectGetPropertyData returns a +1-retained CFString; takeRetainedValue
+        // consumes that reference so it isn't leaked.
+        return stringValue.takeRetainedValue() as String
+    }
+
+    /// Finds the live AudioDeviceID whose UID matches `uid` (UIDs are stable across
+    /// reconnects; device IDs are not), enumerating the same device list the picker shows.
+    private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        return systemAudioDeviceIDs().first { deviceID in
+            audioDeviceHasInputStreams(deviceID)
+                && audioDeviceStringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID) == uid
+        }
+    }
+}
+
+/// A microphone the user can pick in Settings. `uniqueID` is the CoreAudio device UID —
+/// stable across reboots/reconnects — which is what we persist; `localizedName` is shown.
+struct AvailableMicrophoneInputDevice: Identifiable, Equatable {
+    let uniqueID: String
+    let localizedName: String
+    var id: String { uniqueID }
 }
