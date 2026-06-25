@@ -223,6 +223,15 @@ async function handleOpenAITTS(request: Request, env: Env): Promise<Response> {
   // never ships in the app. The app posts { text, voice } where voice is one of the
   // OpenAI voices (alloy, ash, ballad, coral, echo, sage, shimmer, verse). Returns
   // MP3 audio, matching the /tts route so the app can play it back the same way.
+  // Fail clearly if the OpenAI key isn't configured as a Worker secret, instead of
+  // sending `Bearer undefined` upstream and surfacing a confusing OpenAI 401.
+  if (!env.OPENAI_API_KEY) {
+    return new Response(
+      JSON.stringify({ error: "OpenAI TTS is not configured (missing OPENAI_API_KEY secret on the Worker)." }),
+      { status: 500, headers: { "content-type": "application/json" } }
+    );
+  }
+
   const parsedBody = await request.json().catch(() => ({} as Record<string, unknown>));
   const { text, voice } = parsedBody as { text?: string; voice?: string };
 
@@ -234,23 +243,51 @@ async function handleOpenAITTS(request: Request, env: Env): Promise<Response> {
     );
   }
 
+  // Cap input length so a caller can't run up an unbounded per-character OpenAI bill
+  // on this public route (mirrors the size cap on /transcribe-audio). A spoken reply
+  // is short; 4000 chars is generous.
+  const MAX_TTS_CHARS = 4000;
+  if (trimmedText.length > MAX_TTS_CHARS) {
+    return new Response(
+      JSON.stringify({ error: `Text too long for OpenAI TTS (max ${MAX_TTS_CHARS} characters).` }),
+      { status: 413, headers: { "content-type": "application/json" } }
+    );
+  }
+
   const selectedVoice =
     typeof voice === "string" && voice.trim().length > 0 ? voice.trim() : "alloy";
 
-  const response = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "content-type": "application/json",
-      accept: "audio/mpeg",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini-tts",
-      input: trimmedText,
-      voice: selectedVoice,
-      response_format: "mp3",
-    }),
-  });
+  // Bound the upstream call so a slow/hung OpenAI response can't hold the request
+  // open indefinitely (mirrors the AbortController timeout on /transcribe-audio).
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), 30000);
+
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "content-type": "application/json",
+        accept: "audio/mpeg",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini-tts",
+        input: trimmedText,
+        voice: selectedVoice,
+        response_format: "mp3",
+      }),
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "AbortError";
+    return new Response(
+      JSON.stringify({ error: timedOut ? "OpenAI TTS timed out." : "OpenAI TTS request failed." }),
+      { status: timedOut ? 504 : 502, headers: { "content-type": "application/json" } }
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const errorBody = await response.text();

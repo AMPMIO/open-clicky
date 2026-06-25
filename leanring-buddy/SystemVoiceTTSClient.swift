@@ -11,8 +11,29 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class SystemVoiceTTSClient {
+final class SystemVoiceTTSClient: NSObject, AVSpeechSynthesizerDelegate {
     private let speechSynthesizer = AVSpeechSynthesizer()
+
+    // AVSpeechSynthesizer.isSpeaking does NOT flip to true synchronously when speak()
+    // returns — the audio engine spins up asynchronously — so a caller that polls
+    // isPlaying right after speakText (the transient-cursor hide loop and the macro
+    // "wait for TTS to finish" loop) would see false and exit early, fading the
+    // overlay / advancing the macro mid-sentence. We track speaking state ourselves:
+    // set it true the instant we enqueue an utterance and clear it on the
+    // synthesizer's finish/cancel callback. This honors the "returns once playback
+    // has STARTED" contract the AVAudioPlayer-backed network clients already satisfy.
+    private var isSpeakingFlag = false
+
+    /// Identifies the utterance the flag currently belongs to. When a new utterance
+    /// interrupts an old one, the OLD utterance's didCancel callback must NOT clear
+    /// the new utterance's flag — so we only clear when the finishing/cancelling
+    /// utterance is still the active one.
+    private var activeUtteranceID: ObjectIdentifier?
+
+    override init() {
+        super.init()
+        speechSynthesizer.delegate = self
+    }
 
     /// Speaks `text` with the macOS voice identified by `voiceIdentifier` (an
     /// `AVSpeechSynthesisVoice.identifier`; nil uses the system default voice).
@@ -27,17 +48,48 @@ final class SystemVoiceTTSClient {
            let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
             utterance.voice = voice
         }
+        activeUtteranceID = ObjectIdentifier(utterance)
+        isSpeakingFlag = true
         speechSynthesizer.speak(utterance)
     }
 
-    /// Whether the synthesizer is currently speaking.
+    /// True from the moment speakText enqueues an utterance until the synthesizer
+    /// reports it finished/cancelled, OR'd with the synthesizer's own flag as a
+    /// backstop.
     var isPlaying: Bool {
-        speechSynthesizer.isSpeaking
+        isSpeakingFlag || speechSynthesizer.isSpeaking
     }
 
     /// Stops any in-progress speech immediately.
     func stopPlayback() {
+        activeUtteranceID = nil
+        isSpeakingFlag = false
         speechSynthesizer.stopSpeaking(at: .immediate)
+    }
+
+    // MARK: - AVSpeechSynthesizerDelegate
+    // Delivered by AVSpeechSynthesizer on the main thread; hop to the MainActor so
+    // the isolated flag write is well-formed. We capture only the Sendable
+    // ObjectIdentifier (not the utterance) and clear the flag only if it still
+    // refers to the active utterance.
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        let finishedID = ObjectIdentifier(utterance)
+        Task { @MainActor in
+            if finishedID == self.activeUtteranceID {
+                self.isSpeakingFlag = false
+                self.activeUtteranceID = nil
+            }
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        let cancelledID = ObjectIdentifier(utterance)
+        Task { @MainActor in
+            if cancelledID == self.activeUtteranceID {
+                self.isSpeakingFlag = false
+                self.activeUtteranceID = nil
+            }
+        }
     }
 
     /// The English macOS voices available for selection, sorted by name. We filter to
