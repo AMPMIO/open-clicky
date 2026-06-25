@@ -903,10 +903,12 @@ final class CompanionManager: ObservableObject {
     /// Deferred "stop" after a quick tap — cancelled if a second tap arrives (→ latch).
     private var deferredStopTask: Task<Void, Never>?
     private let doubleTapWindow: TimeInterval = 0.4
-    // Only a deliberate sub-0.15s bump counts as a "quick tap" (and defers for
-    // double-tap detection). A real spoken phrase — even one word — is held longer
-    // than this, so it's treated as a hold and submitted immediately (no defer).
-    private let holdVsTapThreshold: TimeInterval = 0.15
+    // A hold longer than this submits immediately; a shorter "quick tap" is deferred
+    // briefly for double-tap detection. 0.25 keeps a real one-word utterance (held
+    // while you speak it) snappy, while leaving a comfortable dwell budget for the
+    // first tap of a deliberate double-tap-to-latch (which must read as a quick tap to
+    // arm the latch — a single shared threshold avoids a tap1-submit/tap2-latch race).
+    private let holdVsTapThreshold: TimeInterval = 0.25
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
@@ -1558,7 +1560,7 @@ final class CompanionManager: ObservableObject {
     private static let handsOnModeInstructions = """
 
 
-    hands-on mode is ON. if the user clearly asks you to DO something clickable on screen (like "click export", "press that button", "just do it for me"), you MUST propose exactly ONE click by ending your reply with this tag: [ACT:press:x,y:label]
+    hands-on mode is ON. if the user clearly asks you to DO something clickable on screen (like "click export", "press that button", "just do it for me"), propose at most ONE click by ending your reply with this tag: [ACT:press:x,y:label]
     x,y are in the same screenshot pixel coordinate space as the pointing tag (add :screenN if it's on another screen). the tag MUST be the very last thing in your reply — say nothing after it. keep your spoken part to a few words; the action is what matters.
 
     examples (follow this format exactly):
@@ -1727,9 +1729,11 @@ final class CompanionManager: ObservableObject {
     /// end of the response (mirrors parsePointingCoordinates). Returns the text
     /// with the tag stripped plus the screenshot-pixel coordinate.
     static func parseActionTag(from responseText: String) -> ActionParseResult {
-        // Not end-anchored: tolerate trailing text/punctuation after the tag, since
-        // smaller vision models don't reliably keep the tag as the very last token.
-        let pattern = #"\[ACT:press:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]"#
+        // End-anchored, but tolerant of trailing whitespace/punctuation (e.g. a period
+        // a small VL model tacks on after the tag). Anchoring matters: it stops a tag
+        // buried mid-prose from queuing a click, and guarantees the match is the LAST
+        // tag if the model emits more than one (its final, intended choice).
+        let pattern = #"\[ACT:press:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]\s*[.!?]*\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
               let tagRange = Range(match.range, in: responseText) else {
