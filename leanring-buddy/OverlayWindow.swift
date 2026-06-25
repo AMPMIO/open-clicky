@@ -12,6 +12,12 @@ import AVFoundation
 import SwiftUI
 
 class OverlayWindow: NSWindow {
+
+    /// G8 (OC-107): transparent gesture-capture view layered above this window's SwiftUI
+    /// content, used to record a freehand "circle this region" drag while push-to-talk is
+    /// held. nil until showOverlay wires it up.
+    var circleGestureCaptureView: CircleToPointGestureCaptureView?
+
     init(screen: NSScreen) {
         // Create window covering entire screen
         super.init(
@@ -849,8 +855,26 @@ class OverlayWindowManager {
             )
 
             let hostingView = NSHostingView(rootView: contentView)
-            hostingView.frame = screen.frame
-            window.contentView = hostingView
+
+            // G8 (OC-107): wrap the SwiftUI cursor content and a transparent gesture-capture
+            // view in a container so a freehand "circle this region" drag can be recorded
+            // above the cursor while push-to-talk is held. The gesture view only intercepts
+            // the mouse while armed, so the overlay stays click-through the rest of the time.
+            // hostingView fills the container's bounds — the same size the window would force
+            // on it as contentView — so the cursor's placement is unchanged on every monitor.
+            let containerView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+
+            hostingView.frame = containerView.bounds
+            hostingView.autoresizingMask = [.width, .height]
+
+            let circleGestureCaptureView = CircleToPointGestureCaptureView(frame: containerView.bounds)
+            circleGestureCaptureView.autoresizingMask = [.width, .height]
+
+            containerView.addSubview(hostingView)
+            containerView.addSubview(circleGestureCaptureView)
+
+            window.contentView = containerView
+            window.circleGestureCaptureView = circleGestureCaptureView
 
             overlayWindows.append(window)
             window.orderFrontRegardless()
@@ -863,6 +887,45 @@ class OverlayWindowManager {
             window.contentView = nil
         }
         overlayWindows.removeAll()
+    }
+
+    // MARK: - Circle-to-Point Gesture Capture (G8 / OC-107)
+
+    /// Arms circle-to-point capture on every overlay window: toggles each off click-through
+    /// and clears its gesture view so a fresh left-drag can be recorded. Called when a
+    /// push-to-talk recording starts.
+    func armCircleGestureCapture() {
+        for window in overlayWindows {
+            window.ignoresMouseEvents = false
+            window.circleGestureCaptureView?.arm()
+        }
+    }
+
+    /// Disarms capture, restores click-through on every overlay window, and returns the
+    /// freehand path (global AppKit points, bottom-left origin) from whichever screen the
+    /// user actually drew on — or nil if no drag was recorded. Called when the recording
+    /// stops and submits.
+    func collectAndDisarmCircleGestureCapture() -> [CGPoint]? {
+        var longestRecordedPath: [CGPoint] = []
+        for window in overlayWindows {
+            if let recordedPath = window.circleGestureCaptureView?.capturedGlobalPath,
+               recordedPath.count > longestRecordedPath.count {
+                longestRecordedPath = recordedPath
+            }
+            window.circleGestureCaptureView?.disarm()
+            window.ignoresMouseEvents = true
+        }
+        return longestRecordedPath.isEmpty ? nil : longestRecordedPath
+    }
+
+    /// Disarms capture and restores click-through WITHOUT collecting a path — used when a
+    /// recording latches into hands-free mode, where we must stop swallowing the mouse and
+    /// discard any partial drag.
+    func disarmAndDiscardCircleGestureCapture() {
+        for window in overlayWindows {
+            window.circleGestureCaptureView?.disarm()
+            window.ignoresMouseEvents = true
+        }
     }
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
