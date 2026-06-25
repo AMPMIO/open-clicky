@@ -72,6 +72,28 @@ final class CompanionManager: ObservableObject {
     /// Multi-provider LLM manager. Handles OpenRouter, OpenClaw, and Worker Proxy modes.
     let providerManager = ProviderManager()
 
+    // MARK: - Surface (Hub / Dock) — G4
+
+    /// Always-visible status surface: corner Hub, notch Dock, or off. Both are
+    /// built so they can be A/B compared; the choice is persisted.
+    let surfacePanelManager = SurfacePanelManager()
+
+    @Published var surfaceMode: SurfaceMode =
+        SurfaceMode(rawValue: UserDefaults.standard.string(forKey: "surfaceMode") ?? "") ?? .hub
+    func setSurfaceMode(_ mode: SurfaceMode) {
+        surfaceMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "surfaceMode")
+        surfacePanelManager.apply(mode: mode, corner: hubCorner, companionManager: self)
+    }
+
+    @Published var hubCorner: HubCorner =
+        HubCorner(rawValue: UserDefaults.standard.string(forKey: "hubCorner") ?? "") ?? .topRight
+    func setHubCorner(_ corner: HubCorner) {
+        hubCorner = corner
+        UserDefaults.standard.set(corner.rawValue, forKey: "hubCorner")
+        surfacePanelManager.apply(mode: surfaceMode, corner: corner, companionManager: self)
+    }
+
     /// TTS proxy reads the configured Worker base URL (single source of truth in
     /// ProviderConfiguration) so the Settings "Worker URL" field reaches TTS too.
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
@@ -556,6 +578,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        surfacePanelManager.apply(mode: surfaceMode, corner: hubCorner, companionManager: self)
         // TLS warmup now happens inside each provider's initializer (ProviderManager
         // builds currentProvider on init), so no eager touch is needed here.
 

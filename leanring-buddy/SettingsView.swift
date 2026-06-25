@@ -83,6 +83,10 @@ struct SettingsView: View {
 
             chatGPTSignInSection
 
+            Divider().background(DS.Colors.borderSubtle)
+
+            surfaceSection
+
             Spacer()
         }
         .padding(16)
@@ -385,6 +389,46 @@ struct SettingsView: View {
                  : "Needs Accessibility permission to click on your behalf.")
                 .font(.system(size: 10))
                 .foregroundColor(companionManager.hasAccessibilityPermission ? DS.Colors.textTertiary : DS.Colors.warningText)
+        }
+    }
+
+    // MARK: - On-screen Surface (Hub / Dock)
+
+    private var surfaceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("On-screen surface")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Picker("", selection: Binding(
+                get: { companionManager.surfaceMode },
+                set: { companionManager.setSurfaceMode($0) }
+            )) {
+                ForEach(SurfaceMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.mini)
+            .labelsHidden()
+
+            if companionManager.surfaceMode == .hub {
+                Picker("", selection: Binding(
+                    get: { companionManager.hubCorner },
+                    set: { companionManager.setHubCorner($0) }
+                )) {
+                    ForEach(HubCorner.allCases, id: \.self) { corner in
+                        Text(corner.label).tag(corner)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.mini)
+                .labelsHidden()
+            }
+
+            Text("Hub: a glass dashboard in a corner that reveals on hover. Dock: a compact bar under the menu bar. Switch to compare them.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
         }
     }
 
