@@ -1034,18 +1034,53 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
     }
 
-    /// Routes the engine's input node through the user's chosen microphone. No-op (system
-    /// default) when nothing is persisted or the chosen device is gone — so a removed mic
-    /// degrades gracefully instead of breaking capture. Must run while the engine is stopped
-    /// and before the tap is installed, because changing the device changes the input format.
+    /// Tracks whether the engine's input unit is currently bound to a specific (non-default)
+    /// device. Lets us leave the well-tested system-default capture path completely untouched
+    /// until the user actually picks a custom mic, and know when a later switch back to the
+    /// default must actively rebind the long-lived unit.
+    private var hasBoundCustomInputDevice = false
+
+    /// Routes the engine's input node through the user's chosen microphone, or back to the
+    /// current system default when the chosen mic is gone / "System Default" is selected after
+    /// a custom one. Must run while the engine is stopped and before the tap is installed,
+    /// because changing the device changes the input format the tap binds to.
     private func applySelectedInputDeviceToAudioEngine() {
-        guard let selectedUID = Self.selectedInputDeviceUID else { return }
-        guard let deviceID = Self.audioDeviceID(forUID: selectedUID) else {
-            print("🎙️ BuddyDictationManager: selected mic \(selectedUID) not present — using system default")
-            return
+        let selectedUID = Self.selectedInputDeviceUID
+        let resolvedCustomDeviceID = selectedUID.flatMap { Self.audioDeviceID(forUID: $0) }
+
+        let targetDeviceID: AudioDeviceID?
+        let willBindCustomDevice: Bool
+        if let resolvedCustomDeviceID {
+            targetDeviceID = resolvedCustomDeviceID
+            willBindCustomDevice = true
+        } else {
+            // No custom mic resolved — either nothing is selected, or the selected one is
+            // absent. If we never bound a custom device this launch, the input unit is still
+            // on the system default, so leave that path entirely alone. Only when we *did*
+            // previously bind a custom device must we actively rebind to the current default:
+            // the input unit is long-lived, so otherwise it stays stuck on the old/absent
+            // device and capture breaks instead of degrading to built-in. (Finding #2.)
+            guard hasBoundCustomInputDevice else { return }
+            if let selectedUID {
+                print("🎙️ BuddyDictationManager: selected mic \(selectedUID) not present — reverting to system default input")
+            }
+            targetDeviceID = Self.defaultInputDeviceID()
+            willBindCustomDevice = false
         }
+        // No resolvable device at all (not even a default) — let AVAudioEngine pick on its own
+        // rather than forcing device 0.
+        guard let targetDeviceID else { return }
         guard let inputAudioUnit = audioEngine.inputNode.audioUnit else { return }
-        var mutableDeviceID = deviceID
+
+        // kAudioOutputUnitProperty_CurrentDevice can only be set while the AUHAL is
+        // UNINITIALIZED. audioEngine is long-lived and audioEngine.stop() stops the graph but
+        // does NOT uninitialize the input unit, so on the 2nd+ session the set would return
+        // kAudioUnitErr_Initialized (-10849) and be silently ignored — device switching would
+        // take effect only once per launch. Uninitialize first; AVAudioEngine re-initializes
+        // the unit on the next prepare()/start(). (Adversarial-review finding #1.)
+        AudioUnitUninitialize(inputAudioUnit)
+
+        var mutableDeviceID = targetDeviceID
         let status = AudioUnitSetProperty(
             inputAudioUnit,
             kAudioOutputUnitProperty_CurrentDevice,
@@ -1055,8 +1090,27 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
         if status != noErr {
-            print("🎙️ BuddyDictationManager: failed to set input device (OSStatus \(status)) — using system default")
+            print("🎙️ BuddyDictationManager: failed to set input device \(targetDeviceID) (OSStatus \(status))")
+            return
         }
+        hasBoundCustomInputDevice = willBindCustomDevice
+    }
+
+    /// The system's current default input device, used as the fallback when no specific mic
+    /// is selected or the selected one is absent.
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceID
+        )
+        guard status == noErr, deviceID != 0 else { return nil }
+        return deviceID
     }
 
     // MARK: Test microphone level meter

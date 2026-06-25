@@ -1122,13 +1122,7 @@ private struct MicrophoneSettingsSection: View {
                 }
             }
         }
-        .onAppear {
-            availableDevices = BuddyDictationManager.availableMicrophoneInputDevices()
-            // Show the persisted device as selected only if it's still present; otherwise
-            // fall back to System Default, matching what capture actually does.
-            let persistedUID = BuddyDictationManager.selectedInputDeviceUID
-            selectedDeviceUID = availableDevices.contains { $0.uniqueID == persistedUID } ? persistedUID : nil
-        }
+        .onAppear { refreshAvailableMicrophoneDevices() }
         .onDisappear {
             // Never leave the mic hot once the settings panel closes.
             buddyDictationManager.stopInputLevelMonitoringForTest()
@@ -1174,8 +1168,21 @@ private struct MicrophoneSettingsSection: View {
         if buddyDictationManager.isMonitoringInputLevelForTest {
             buddyDictationManager.stopInputLevelMonitoringForTest()
         } else {
+            // Re-enumerate so a mic plugged in while Settings stayed open shows up the moment
+            // the user goes to test it — a cheap refresh in lieu of a CoreAudio hot-plug
+            // listener (adversarial-review finding #3, the optional one).
+            refreshAvailableMicrophoneDevices()
             buddyDictationManager.startInputLevelMonitoringForTest()
         }
+    }
+
+    /// Re-reads the available input devices and recomputes the effective selection: the
+    /// persisted device is shown selected only if it's still present, else System Default —
+    /// matching what capture actually does when a device is absent.
+    private func refreshAvailableMicrophoneDevices() {
+        availableDevices = BuddyDictationManager.availableMicrophoneInputDevices()
+        let persistedUID = BuddyDictationManager.selectedInputDeviceUID
+        selectedDeviceUID = availableDevices.contains { $0.uniqueID == persistedUID } ? persistedUID : nil
     }
 }
 
