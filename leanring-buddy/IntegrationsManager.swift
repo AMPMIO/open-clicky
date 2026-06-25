@@ -75,7 +75,10 @@ final class IntegrationsManager: ObservableObject {
         // Replace any in-flight attempt for this connector so re-tapping restarts cleanly.
         activeConnectTasks[kind]?.cancel()
         let connectTask = Task { [weak self] in
-            await self?.runGitHubDeviceFlow()
+            // Unwrap so the closure returns Void (not Void?) — keeps the stored task
+            // typed as Task<Void, Never>.
+            guard let self else { return }
+            await self.runGitHubDeviceFlow()
         }
         activeConnectTasks[kind] = connectTask
     }
