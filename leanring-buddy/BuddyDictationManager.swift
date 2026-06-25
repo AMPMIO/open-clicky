@@ -11,6 +11,7 @@ import AppKit
 import AVFoundation
 import Combine
 import Foundation
+import os
 import Speech
 
 enum BuddyPushToTalkShortcut {
@@ -646,7 +647,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         resetSessionState()
 
         guard shouldSubmitFinalDraft else { return }
-        guard !finalTranscriptText.isEmpty else { return }
+        guard !finalTranscriptText.isEmpty else {
+            // Don't send an empty prompt to the model, but make the drop visible
+            // (this is what a too-short / no-speech push-to-talk looks like).
+            ClickyTelemetry.pipeline.notice("push-to-talk produced an empty final transcript — nothing sent (likely too short or no speech)")
+            return
+        }
 
         currentDraftCallbacks?.submitDraftText(finalDraftText)
     }

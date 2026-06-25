@@ -903,7 +903,10 @@ final class CompanionManager: ObservableObject {
     /// Deferred "stop" after a quick tap — cancelled if a second tap arrives (→ latch).
     private var deferredStopTask: Task<Void, Never>?
     private let doubleTapWindow: TimeInterval = 0.4
-    private let holdVsTapThreshold: TimeInterval = 0.35
+    // Only a deliberate sub-0.15s bump counts as a "quick tap" (and defers for
+    // double-tap detection). A real spoken phrase — even one word — is held longer
+    // than this, so it's treated as a hold and submitted immediately (no defer).
+    private let holdVsTapThreshold: TimeInterval = 0.15
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
@@ -1354,6 +1357,10 @@ final class CompanionManager: ObservableObject {
                                 ClickyTelemetry.handsOn.notice("[ACT] proposal queued (labelLen)=\(label.count, privacy: .public)")
                             }
                         }
+                    } else {
+                        // Hands-On is on but the model didn't emit an [ACT:] tag — the
+                        // usual reason a "click X for me" request only gets described.
+                        ClickyTelemetry.handsOn.debug("hands-on ON but the model emitted no [ACT] tag")
                     }
                 }
 
@@ -1551,7 +1558,15 @@ final class CompanionManager: ObservableObject {
     private static let handsOnModeInstructions = """
 
 
-    hands-on mode is ON. if the user clearly asks you to DO something clickable on screen (like "click export", "press that button", "just do it for me"), you may propose ONE click. append a tag at the very end, AFTER your spoken text: [ACT:press:x,y:label] using the same screenshot pixel coordinate space as the pointing tag (add :screenN if it's on another screen). only propose an action when the user clearly wants you to act, and only for a single, clearly clickable element. NEVER propose actions for destructive or irreversible things (delete, send, pay, post, quit, overwrite) — for those, just point and explain instead. the user always confirms by voice before anything happens. don't use both [POINT] and [ACT] in one reply — [ACT] already points at the element.
+    hands-on mode is ON. if the user clearly asks you to DO something clickable on screen (like "click export", "press that button", "just do it for me"), you MUST propose exactly ONE click by ending your reply with this tag: [ACT:press:x,y:label]
+    x,y are in the same screenshot pixel coordinate space as the pointing tag (add :screenN if it's on another screen). the tag MUST be the very last thing in your reply — say nothing after it. keep your spoken part to a few words; the action is what matters.
+
+    examples (follow this format exactly):
+    user: "click the save button" → on it. [ACT:press:842,196:Save button]
+    user: "open settings for me" → sure thing. [ACT:press:1180,64:Settings]
+    user: "hit the blue continue button" → done. [ACT:press:640,720:Continue]
+
+    only propose an action when the user clearly wants you to act, and only for a single, clearly clickable element. NEVER propose actions for destructive or irreversible things (delete, send, pay, post, quit, overwrite) — for those, just point and explain instead. the user always confirms by voice before anything happens. don't use both [POINT] and [ACT] in one reply — [ACT] already points at the element.
     """
 
     /// Handles the user's spoken response to a pending Hands-On action: perform it
@@ -1712,7 +1727,9 @@ final class CompanionManager: ObservableObject {
     /// end of the response (mirrors parsePointingCoordinates). Returns the text
     /// with the tag stripped plus the screenshot-pixel coordinate.
     static func parseActionTag(from responseText: String) -> ActionParseResult {
-        let pattern = #"\[ACT:press:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]\s*$"#
+        // Not end-anchored: tolerate trailing text/punctuation after the tag, since
+        // smaller vision models don't reliably keep the tag as the very last token.
+        let pattern = #"\[ACT:press:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
               let tagRange = Range(match.range, in: responseText) else {
