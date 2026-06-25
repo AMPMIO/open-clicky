@@ -77,6 +77,11 @@ final class TTSProviderManager: ObservableObject {
     }
 
     func setSelectedVoiceID(_ voiceID: String, for provider: TTSProviderKind) {
+        // Publish so any observing view (the Settings voice picker) repaints its
+        // checkmark/highlight on selection. The selection lives in UserDefaults per
+        // provider — not a @Published property — so without this the UI wouldn't
+        // reflect the tap until some other change happened to republish.
+        objectWillChange.send()
         UserDefaults.standard.set(voiceID, forKey: Self.voiceKeyPrefix + provider.rawValue)
     }
 

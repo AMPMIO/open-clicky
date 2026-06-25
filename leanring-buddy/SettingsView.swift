@@ -929,10 +929,11 @@ struct AgentEndpointSettingsView: View {
     }
 }
 
-/// Voice / text-to-speech settings: a TTS-provider picker, the active provider's
-/// voice list (radio-style selection), and a tap-to-preview button per voice.
-/// Observes the TTS manager directly so the voice list updates when the provider
-/// changes and preview buttons reflect playback state.
+/// Voice / text-to-speech settings: a TTS-provider picker plus the active provider's
+/// voice list. Tapping a voice cell selects it (persisted per provider) and instantly
+/// auditions it with a short preview phrase; the selected voice is marked with a
+/// checkmark and a highlight. Observes the TTS manager directly so the list updates
+/// when the provider changes and cells reflect playback state.
 struct VoiceSettingsSection: View {
     @ObservedObject var ttsProviderManager: TTSProviderManager
 
@@ -967,11 +968,18 @@ struct VoiceSettingsSection: View {
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Voice list with a per-voice preview button. Each row selects the voice
-            // (radio-style) and the play button auditions it; the selection is highlighted.
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(voices) { voice in
-                    voiceRow(voice, isSelected: voice.identifier == selectedVoiceID, provider: activeProvider)
+            // Voice list. Tapping a cell selects that voice (persisted) and auditions it;
+            // the selected voice shows a checkmark + highlight. Tolerate an empty list
+            // (e.g. no on-device voices installed) with a clear, non-empty message.
+            if voices.isEmpty {
+                Text("No voices available for \(activeProvider.displayName).")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(voices) { voice in
+                        voiceRow(voice, isSelected: voice.identifier == selectedVoiceID, provider: activeProvider)
+                    }
                 }
             }
 
@@ -984,25 +992,22 @@ struct VoiceSettingsSection: View {
     }
 
     private func voiceRow(_ voice: TTSVoiceOption, isSelected: Bool, provider: TTSProviderKind) -> some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                ttsProviderManager.setSelectedVoiceID(voice.identifier, for: provider)
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                        .font(.system(size: 10))
-                        .foregroundColor(isSelected ? DS.Colors.blue400 : DS.Colors.textTertiary)
-                    Text(voice.displayName)
-                        .font(.system(size: 10))
-                        .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
-                }
-            }
-            .buttonStyle(.plain)
+        let isAuditioningThisVoice = previewingVoiceID == voice.identifier
 
-            Spacer()
+        // One tap target per cell: tapping selects this voice and immediately auditions it.
+        return Button(action: { selectAndPreviewVoice(voice, for: provider) }) {
+            HStack(spacing: 8) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(isSelected ? DS.Colors.blue400 : DS.Colors.textTertiary)
+                Text(voice.displayName)
+                    .font(.system(size: 10))
+                    .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
 
-            Button(action: { previewVoice(voice.identifier, for: provider) }) {
-                if previewingVoiceID == voice.identifier {
+                Spacer()
+
+                // Play affordance — becomes a spinner while this voice is auditioning.
+                if isAuditioningThisVoice {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "play.circle")
@@ -1010,10 +1015,28 @@ struct VoiceSettingsSection: View {
                         .foregroundColor(DS.Colors.textSecondary)
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(previewingVoiceID != nil)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())   // whole row is the tap target, not just the text
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                    .fill(isSelected ? DS.Colors.blue400.opacity(0.12) : Color.clear)
+            )
         }
-        .padding(.vertical, 1)
+        .buttonStyle(.plain)
+        // Pointer cursor only while the cell is actually tappable — suppressed during an
+        // audition when every cell is disabled, so the cursor never lies about clickability.
+        .pointerCursor(isEnabled: previewingVoiceID == nil)
+        // Disable all cells while one auditions so previews never overlap (the manager
+        // starts a new preview without stopping a prior one).
+        .disabled(previewingVoiceID != nil)
+    }
+
+    /// Persists the selection first (synchronously, so picking a voice always sticks even
+    /// when the audition can't reach the Worker), then auditions the chosen voice.
+    private func selectAndPreviewVoice(_ voice: TTSVoiceOption, for provider: TTSProviderKind) {
+        ttsProviderManager.setSelectedVoiceID(voice.identifier, for: provider)
+        previewVoice(voice.identifier, for: provider)
     }
 
     private func previewVoice(_ voiceID: String, for provider: TTSProviderKind) {
