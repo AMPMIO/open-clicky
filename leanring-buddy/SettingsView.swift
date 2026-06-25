@@ -6,6 +6,7 @@
 //  configure OpenClaw endpoint, test connection.
 //
 
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -68,6 +69,8 @@ struct SettingsView: View {
             connectionTestSection
 
             Divider().background(DS.Colors.borderSubtle)
+
+            pushToTalkSection
 
             speechToTextSection
 
@@ -445,6 +448,12 @@ struct SettingsView: View {
     /// and re-render as the test meter's audio level updates.
     private var microphoneSection: some View {
         MicrophoneSettingsSection(buddyDictationManager: companionManager.buddyDictationManager)
+    }
+
+    /// Lets the user record their own push-to-talk hotkey. Extracted into its own view so it
+    /// can own the live key-capture recorder state.
+    private var pushToTalkSection: some View {
+        PushToTalkShortcutSettingsSection()
     }
 
     // MARK: - On-screen Surface (Hub / Dock)
@@ -1205,5 +1214,198 @@ private struct MicrophoneTestLevelMeter: View {
         }
         .animation(.easeOut(duration: 0.08), value: audioPowerLevel)
         .accessibilityLabel("Microphone input level")
+    }
+}
+
+/// Push-to-talk shortcut settings: shows the active shortcut and lets the user record their
+/// own (an arbitrary modifier combo, or a single modifier like Fn) or reset to the default.
+private struct PushToTalkShortcutSettingsSection: View {
+    @StateObject private var shortcutRecorder = PushToTalkShortcutRecorder()
+    // Mirrored from BuddyPushToTalkShortcut so the row repaints after recording / resetting
+    // (the persisted shortcut isn't a @Published source).
+    @State private var currentShortcutDisplayText = BuddyPushToTalkShortcut.pushToTalkDisplayText
+    @State private var hasCustomShortcut = BuddyPushToTalkShortcut.recordedShortcut != nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Push-to-talk shortcut")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text("Hold this to talk. Record your own — an arbitrary modifier combo, or a single modifier like Fn.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button(action: toggleRecording) {
+                    HStack(spacing: 6) {
+                        Image(systemName: shortcutRecorder.isRecording ? "circle.fill" : "keyboard")
+                            .font(.system(size: 10))
+                            .foregroundColor(shortcutRecorder.isRecording ? DS.Colors.blue400 : DS.Colors.textSecondary)
+                        Text(shortcutRecorder.isRecording
+                             ? "Press your shortcut… (esc to cancel)"
+                             : currentShortcutDisplayText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textPrimary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                            .strokeBorder(
+                                shortcutRecorder.isRecording ? DS.Colors.blue400 : DS.Colors.borderSubtle,
+                                lineWidth: 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                // Only offer "Reset" when a custom shortcut is set and we're not mid-record.
+                if hasCustomShortcut && !shortcutRecorder.isRecording {
+                    Button(action: resetToDefaultShortcut) {
+                        Text("Reset")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+        .onAppear {
+            shortcutRecorder.onCapture = { recordedShortcut in
+                BuddyPushToTalkShortcut.recordedShortcut = recordedShortcut
+                refreshShortcutDisplay()
+            }
+        }
+        // Never leave the global key monitors running once the section closes.
+        .onDisappear { shortcutRecorder.cancel() }
+    }
+
+    private func toggleRecording() {
+        if shortcutRecorder.isRecording {
+            shortcutRecorder.cancel()
+        } else {
+            shortcutRecorder.startRecording()
+        }
+    }
+
+    private func resetToDefaultShortcut() {
+        BuddyPushToTalkShortcut.recordedShortcut = nil
+        refreshShortcutDisplay()
+    }
+
+    private func refreshShortcutDisplay() {
+        currentShortcutDisplayText = BuddyPushToTalkShortcut.pushToTalkDisplayText
+        hasCustomShortcut = BuddyPushToTalkShortcut.recordedShortcut != nil
+    }
+}
+
+/// Captures a push-to-talk shortcut from live keyboard input. Installs BOTH a local and a
+/// global NSEvent monitor while recording: the local catches events when the (non-activating)
+/// menu-bar panel is key, the global catches them when it isn't — so recording works
+/// regardless of focus. A bare key (no modifiers) is rejected since it would fire push-to-talk
+/// constantly; esc cancels.
+@MainActor
+final class PushToTalkShortcutRecorder: ObservableObject {
+    @Published private(set) var isRecording = false
+
+    /// Called on the main thread with the captured shortcut.
+    var onCapture: ((RecordedPushToTalkShortcut) -> Void)?
+
+    private var localEventMonitor: Any?
+    private var globalEventMonitor: Any?
+    // Peak set of modifiers held during the current recording, used to capture a modifier-only
+    // shortcut (e.g. Fn) when the user releases everything without pressing a key.
+    private var peakHeldModifiers: NSEvent.ModifierFlags = []
+
+    func startRecording() {
+        guard !isRecording else { return }
+        peakHeldModifiers = []
+        isRecording = true
+
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            // Consume the event (return nil) when handled, so the keystroke doesn't also act on
+            // the UI (e.g. Space scrolling) while recording.
+            return self.handle(event) ? nil : event
+        }
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            // Global monitor can't consume events; just feed it to the same handler.
+            _ = self?.handle(event)
+        }
+    }
+
+    func cancel() {
+        if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+        if let globalEventMonitor { NSEvent.removeMonitor(globalEventMonitor) }
+        localEventMonitor = nil
+        globalEventMonitor = nil
+        peakHeldModifiers = []
+        isRecording = false
+    }
+
+    /// Returns true if the event was consumed (shortcut captured, esc cancelled, or a bare key
+    /// ignored while recording).
+    @discardableResult
+    private func handle(_ event: NSEvent) -> Bool {
+        guard isRecording else { return false }
+
+        switch event.type {
+        case .keyDown:
+            if event.keyCode == 53 { // esc cancels
+                cancel()
+                return true
+            }
+            let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard !modifierFlags.isEmpty else {
+                // A bare key with no modifiers would trigger push-to-talk constantly — reject
+                // it and keep listening.
+                return true
+            }
+            finish(with: RecordedPushToTalkShortcut(
+                modifierFlagsRawValue: modifierFlags.rawValue,
+                keyCode: event.keyCode,
+                keyLabel: Self.keyLabel(for: event)
+            ))
+            return true
+
+        case .flagsChanged:
+            let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if !modifierFlags.isEmpty {
+                peakHeldModifiers.formUnion(modifierFlags)
+                return true
+            }
+            // All modifiers released with no key pressed → a modifier-only shortcut (e.g. Fn).
+            if !peakHeldModifiers.isEmpty {
+                finish(with: RecordedPushToTalkShortcut(
+                    modifierFlagsRawValue: peakHeldModifiers.rawValue,
+                    keyCode: nil,
+                    keyLabel: nil
+                ))
+            }
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    private func finish(with shortcut: RecordedPushToTalkShortcut) {
+        cancel()
+        onCapture?(shortcut)
+    }
+
+    private static func keyLabel(for event: NSEvent) -> String {
+        if event.keyCode == BuddyPushToTalkShortcut.pushToTalkKeyCode { return "space" }
+        if let characters = event.charactersIgnoringModifiers,
+           !characters.isEmpty,
+           characters != " " {
+            return characters.uppercased()
+        }
+        return "key \(event.keyCode)"
     }
 }
