@@ -105,6 +105,17 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
+            // The tap was disabled (slow handler or a user-input flood). A key-up's
+            // flagsChanged can be dropped during the disabled window, so the held state
+            // can't be trusted across the reset. If we still believe the shortcut is held,
+            // synthesize a RELEASED so downstream consumers (push-to-talk recording and the
+            // G8 circle-to-point overlay) always get their key-up and never hang pressed —
+            // otherwise the overlay could stay non-click-through and freeze the mouse.
+            if isShortcutCurrentlyPressed {
+                isShortcutCurrentlyPressed = false
+                ClickyTelemetry.shortcut.notice("push-to-talk tap reset while pressed — synthesizing RELEASED")
+                shortcutTransitionPublisher.send(.released)
+            }
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
