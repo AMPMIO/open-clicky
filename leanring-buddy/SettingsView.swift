@@ -32,6 +32,7 @@ struct SettingsView: View {
     @State private var excludeAppInput = ""
     @ObservedObject private var oauthManager = OAuthSignInManager.shared
     @ObservedObject private var macroStore = SpokenMacroStore.shared
+    @ObservedObject private var integrationsManager = IntegrationsManager.shared
     @State private var oauthClientID = ""
     @State private var oauthAuthorizeURL = ""
     @State private var oauthTokenURL = ""
@@ -98,6 +99,10 @@ struct SettingsView: View {
             Divider().background(DS.Colors.borderSubtle)
 
             surfaceSection
+
+            Divider().background(DS.Colors.borderSubtle)
+
+            integrationsSection
 
             Spacer()
         }
@@ -661,6 +666,168 @@ struct SettingsView: View {
     }
 
     // MARK: - Sign in with ChatGPT (OAuth)
+
+    // MARK: - Integrations (G6.1 / OC-118)
+
+    /// The Integrations catalog: a grid of external-service connectors. GitHub is live via
+    /// OAuth Device Flow; the rest render as non-interactive "Coming soon" cards so the
+    /// roadmap is visible. Below the grid, a detail strip surfaces the Device Flow code (or
+    /// a failure) while a GitHub connect is in progress.
+    private var integrationsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Integrations")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text("Connect external services so Clicky can work with them.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(IntegrationConnectorKind.allCases) { connectorKind in
+                    connectorCard(for: connectorKind)
+                }
+            }
+
+            integrationsDeviceFlowDetail
+        }
+    }
+
+    private func connectorCard(for kind: IntegrationConnectorKind) -> some View {
+        let connectionState = integrationsManager.connectionState(for: kind)
+        return VStack(spacing: 6) {
+            Image(systemName: kind.symbolName)
+                .font(.system(size: 18))
+                .foregroundColor(kind.isAvailable ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+
+            Text(kind.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(kind.isAvailable ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+
+            connectorCardFooter(for: kind, state: connectionState)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                .fill(Color.white.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 1)
+        )
+    }
+
+    /// The action area at the bottom of each connector card, driven by live state.
+    @ViewBuilder
+    private func connectorCardFooter(for kind: IntegrationConnectorKind, state: IntegrationConnectionState) -> some View {
+        if !kind.isAvailable {
+            Text("Coming soon")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .help(kind.comingSoonReason ?? "")
+        } else {
+            switch state {
+            case .disconnected, .failed:
+                Button(action: { integrationsManager.connect(kind) }) {
+                    Text("Connect")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.blue400)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+            case .connecting, .awaitingUserAuthorization:
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Connecting…")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+            case .connected(let accountLabel):
+                VStack(spacing: 3) {
+                    Text(accountLabel.map { "@\($0)" } ?? "Connected ✓")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .lineLimit(1)
+                    Button(action: { integrationsManager.disconnect(kind) }) {
+                        Text("Disconnect")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(DS.Colors.warningText)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+    }
+
+    /// Detail strip shown beneath the grid while GitHub is mid-handshake: the Device Flow
+    /// user code + an "Open GitHub" button, or a failure message with a dismiss.
+    @ViewBuilder
+    private var integrationsDeviceFlowDetail: some View {
+        switch integrationsManager.connectionState(for: .github) {
+        case .awaitingUserAuthorization(let userCode, let verificationURL):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Authorize GitHub")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Text("Open GitHub and enter this code:")
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.textSecondary)
+                HStack {
+                    Text(userCode)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button(action: { _ = NSWorkspace.shared.open(verificationURL) }) {
+                        Text("Open GitHub")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.blue400)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    Button(action: { integrationsManager.cancelConnect(.github) }) {
+                        Text("Cancel")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                    .fill(Color.white.opacity(0.05))
+            )
+
+        case .failed(let message):
+            HStack(alignment: .top, spacing: 6) {
+                Text(message)
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.warningText)
+                Spacer()
+                Button(action: { integrationsManager.cancelConnect(.github) }) {
+                    Text("Dismiss")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+        default:
+            EmptyView()
+        }
+    }
 
     private var chatGPTSignInSection: some View {
         VStack(alignment: .leading, spacing: 6) {
