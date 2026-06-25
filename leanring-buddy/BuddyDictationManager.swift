@@ -310,13 +310,28 @@ enum BuddyPushToTalkShortcut {
                 && wasShortcutPreviouslyPressed {
                 return .released
             }
+            // #1(b): the only thing emitting .released for a key+modifier shortcut is the key's
+            // .keyUp, so a missed keyUp (a tap-disable window, focus/Space change) would wedge
+            // the session pressed until restart. Also release when the held modifiers drop
+            // below the required set while pressed — losing the modifiers tears it down too.
+            // (The CGEvent-tap synthetic-.released-on-tap-disable fix is OC1's, in G8.)
+            if shortcutEventType == .flagsChanged
+                && wasShortcutPreviouslyPressed
+                && !modifierFlags.isSuperset(of: requiredModifierFlags) {
+                return .released
+            }
             return .none
         }
 
-        // Modifier-only (e.g. Fn): all required modifiers held = pressed, released = released.
+        // Modifier-only (e.g. Fn): require the held modifiers to EQUAL the recorded set (after
+        // masking to the relevant modifiers), so a recorded ⌃⌥ doesn't also fire while ⌃⌥⌘ is
+        // held. (#2 — the device-specific right-⌘ default path keeps its own matching.)
         guard shortcutEventType == .flagsChanged else { return .none }
-        let isShortcutCurrentlyPressed = !requiredModifierFlags.isEmpty
-            && modifierFlags.contains(requiredModifierFlags)
+        let relevantModifierMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
+        let requiredRelevantFlags = requiredModifierFlags.intersection(relevantModifierMask)
+        let activeRelevantFlags = modifierFlags.intersection(relevantModifierMask)
+        let isShortcutCurrentlyPressed = !requiredRelevantFlags.isEmpty
+            && activeRelevantFlags == requiredRelevantFlags
         if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
             return .pressed
         }

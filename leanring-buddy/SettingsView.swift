@@ -1359,6 +1359,21 @@ final class PushToTalkShortcutRecorder: ObservableObject {
         isRecording = false
     }
 
+    deinit {
+        // Backstop to .onDisappear, which is unreliable for a popover hosted on the
+        // non-activating menu-bar panel (dismissed via orderOut): never strand the monitors.
+        // A leaked global monitor keeps routing every keystroke through the closure, so remove
+        // both tokens here. (isRecording isn't reset — the object is being deallocated, and a
+        // nonisolated deinit can't mutate a main-actor @Published anyway; the [weak self]
+        // closures already no-op once self is gone.)
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+        }
+        if let globalEventMonitor {
+            NSEvent.removeMonitor(globalEventMonitor)
+        }
+    }
+
     /// Returns true if the event was consumed (shortcut captured, esc cancelled, or a bare key
     /// ignored while recording).
     @discardableResult
