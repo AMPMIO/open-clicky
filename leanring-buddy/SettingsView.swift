@@ -71,6 +71,8 @@ struct SettingsView: View {
 
             speechToTextSection
 
+            microphoneSection
+
             voiceSection
 
             Divider().background(DS.Colors.borderSubtle)
@@ -436,6 +438,13 @@ struct SettingsView: View {
     /// re-render when the active provider / playback state changes.
     private var voiceSection: some View {
         VoiceSettingsSection(ttsProviderManager: companionManager.ttsProviderManager)
+    }
+
+    /// Lets the user pick which microphone feeds dictation and confirm it with a live level
+    /// meter. Extracted into its own view so it can `@ObservedObject` the dictation manager
+    /// and re-render as the test meter's audio level updates.
+    private var microphoneSection: some View {
+        MicrophoneSettingsSection(buddyDictationManager: companionManager.buddyDictationManager)
     }
 
     // MARK: - On-screen Surface (Hub / Dock)
@@ -1051,5 +1060,143 @@ struct VoiceSettingsSection: View {
                 voicePreviewError = "Preview failed: \(error.localizedDescription.prefix(80))"
             }
         }
+    }
+}
+
+/// Microphone input settings: a picker of the available input devices (plus "System
+/// Default") and a "Test microphone" toggle that shows a live input-level meter so the
+/// user can confirm the chosen device is picking up sound. Observes the dictation manager
+/// so the meter repaints as the audio level updates and reflects test start/stop state.
+private struct MicrophoneSettingsSection: View {
+    @ObservedObject var buddyDictationManager: BuddyDictationManager
+
+    @State private var availableDevices: [AvailableMicrophoneInputDevice] = []
+    // The effective selection shown in the UI: nil means "System Default". Kept in local
+    // state (initialized from the persisted UID) so the checkmark repaints on tap.
+    @State private var selectedDeviceUID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Microphone")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text("Choose which microphone Clicky listens through for push-to-talk.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                // "System Default" is always present so the user can revert to whatever the
+                // OS picks (e.g. when their chosen mic is unplugged).
+                deviceRow(uid: nil, name: "System Default")
+                if availableDevices.isEmpty {
+                    Text("No additional microphones detected.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .padding(.horizontal, 6)
+                } else {
+                    ForEach(availableDevices) { device in
+                        deviceRow(uid: device.uniqueID, name: device.localizedName)
+                    }
+                }
+            }
+
+            // Test mic: an explicit toggle so the mic only goes live when the user asks.
+            // While active, a level meter shows live input so they can confirm it works.
+            HStack(spacing: 10) {
+                Button(action: toggleMicrophoneTest) {
+                    HStack(spacing: 5) {
+                        Image(systemName: buddyDictationManager.isMonitoringInputLevelForTest ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 10))
+                        Text(buddyDictationManager.isMonitoringInputLevelForTest ? "Stop test" : "Test microphone")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(DS.Colors.blue400)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                if buddyDictationManager.isMonitoringInputLevelForTest {
+                    MicrophoneTestLevelMeter(audioPowerLevel: buddyDictationManager.currentAudioPowerLevel)
+                }
+            }
+        }
+        .onAppear {
+            availableDevices = BuddyDictationManager.availableMicrophoneInputDevices()
+            // Show the persisted device as selected only if it's still present; otherwise
+            // fall back to System Default, matching what capture actually does.
+            let persistedUID = BuddyDictationManager.selectedInputDeviceUID
+            selectedDeviceUID = availableDevices.contains { $0.uniqueID == persistedUID } ? persistedUID : nil
+        }
+        .onDisappear {
+            // Never leave the mic hot once the settings panel closes.
+            buddyDictationManager.stopInputLevelMonitoringForTest()
+        }
+    }
+
+    private func deviceRow(uid: String?, name: String) -> some View {
+        let isSelected = uid == selectedDeviceUID
+        return Button(action: { selectInputDevice(uid: uid) }) {
+            HStack(spacing: 8) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(isSelected ? DS.Colors.blue400 : DS.Colors.textTertiary)
+                Text(name)
+                    .font(.system(size: 10))
+                    .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
+                Spacer()
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())   // whole row is the tap target, not just the text
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.small)
+                    .fill(isSelected ? DS.Colors.blue400.opacity(0.12) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    /// Persists the chosen device (nil = system default) and updates the checkmark. If the
+    /// test meter is live, restart it so it immediately reflects the newly chosen device.
+    private func selectInputDevice(uid: String?) {
+        BuddyDictationManager.selectedInputDeviceUID = uid
+        selectedDeviceUID = uid
+        if buddyDictationManager.isMonitoringInputLevelForTest {
+            buddyDictationManager.stopInputLevelMonitoringForTest()
+            buddyDictationManager.startInputLevelMonitoringForTest()
+        }
+    }
+
+    private func toggleMicrophoneTest() {
+        if buddyDictationManager.isMonitoringInputLevelForTest {
+            buddyDictationManager.stopInputLevelMonitoringForTest()
+        } else {
+            buddyDictationManager.startInputLevelMonitoringForTest()
+        }
+    }
+}
+
+/// A simple segmented level meter driven by the dictation manager's published audio power
+/// level (0...1). Lit segments rise with input volume so the user can see the microphone
+/// responding while testing.
+private struct MicrophoneTestLevelMeter: View {
+    let audioPowerLevel: CGFloat
+
+    private let segmentCount = 18
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<segmentCount, id: \.self) { segmentIndex in
+                let segmentThreshold = CGFloat(segmentIndex) / CGFloat(segmentCount)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(audioPowerLevel >= segmentThreshold ? DS.Colors.blue400 : DS.Colors.blue400.opacity(0.15))
+                    .frame(width: 4, height: 14)
+            }
+        }
+        .animation(.easeOut(duration: 0.08), value: audioPowerLevel)
+        .accessibilityLabel("Microphone input level")
     }
 }
