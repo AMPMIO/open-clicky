@@ -1,22 +1,23 @@
 //
-//  ElevenLabsTTSClient.swift
+//  OpenAITTSClient.swift
 //  leanring-buddy
 //
-//  Streams text-to-speech audio from ElevenLabs and plays it back
-//  through the system audio output. Uses the streaming endpoint so
-//  playback begins before the full audio has been generated.
+//  Posts text to the Cloudflare Worker `/tts-openai` route, which proxies OpenAI's
+//  TTS API (gpt-4o-mini-tts) with the server-held key, then plays the returned MP3
+//  through the system audio output. Mirrors ElevenLabsTTSClient so the TTS provider
+//  layer can swap them interchangeably.
 //
 
 import AVFoundation
 import Foundation
 
 @MainActor
-final class ElevenLabsTTSClient {
+final class OpenAITTSClient {
     private var proxyURL: URL
     private let session: URLSession
 
-    /// The audio player for the current TTS playback. Kept alive so the
-    /// audio finishes playing even if the caller doesn't hold a reference.
+    /// The audio player for the current TTS playback. Kept alive so the audio
+    /// finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
 
     init(proxyURL: String) {
@@ -28,43 +29,32 @@ final class ElevenLabsTTSClient {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
-    /// Throws on network or decoding errors. Cancellation-safe.
-    ///
-    /// When `voiceId` is non-nil it's forwarded to the Worker, which uses it instead
-    /// of its configured ELEVENLABS_VOICE_ID for this request (the per-request voice
-    /// picker). When nil, the Worker falls back to its default voice as before.
-    func speakText(_ text: String, voiceId: String? = nil) async throws {
+    /// Sends `text` to the Worker's OpenAI TTS route with the selected `voice`
+    /// (one of: alloy, ash, ballad, coral, echo, sage, shimmer, verse) and plays
+    /// the resulting audio. Throws on network or decoding errors. Cancellation-safe.
+    func speakText(_ text: String, voice: String) async throws {
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
 
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "text": text,
-            "model_id": "eleven_flash_v2_5",
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
+            "voice": voice
         ]
-        if let voiceId, !voiceId.isEmpty {
-            body["voiceId"] = voiceId
-        }
-
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "ElevenLabsTTS", code: -1,
+            throw NSError(domain: "OpenAITTS", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
+            throw NSError(domain: "OpenAITTS", code: httpResponse.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "OpenAI TTS error (\(httpResponse.statusCode)): \(errorBody)"])
         }
 
         try Task.checkCancellation()
@@ -72,7 +62,7 @@ final class ElevenLabsTTSClient {
         let player = try AVAudioPlayer(data: data)
         self.audioPlayer = player
         player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        print("🔊 OpenAI TTS: playing \(data.count / 1024)KB audio")
     }
 
     /// Updates the proxy endpoint so playback isn't pinned to a stale/placeholder

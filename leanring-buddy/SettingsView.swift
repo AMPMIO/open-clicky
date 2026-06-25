@@ -69,6 +69,12 @@ struct SettingsView: View {
 
             Divider().background(DS.Colors.borderSubtle)
 
+            speechToTextSection
+
+            voiceSection
+
+            Divider().background(DS.Colors.borderSubtle)
+
             handsOnSection
 
             terminalBridgeSection
@@ -390,6 +396,46 @@ struct SettingsView: View {
                 .font(.system(size: 10))
                 .foregroundColor(companionManager.hasAccessibilityPermission ? DS.Colors.textTertiary : DS.Colors.warningText)
         }
+    }
+
+    // MARK: - Speech-to-Text (G2.1)
+
+    /// Lets the user pick the speech-to-text backend. Apple Speech is the default —
+    /// it's on-device and starts instantly, so a quick push-to-talk tap isn't lost
+    /// while a cloud session connects.
+    private var speechToTextSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Speech-to-text")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Picker("", selection: Binding(
+                get: { companionManager.selectedSTTProvider },
+                set: { companionManager.setSelectedSTTProvider($0) }
+            )) {
+                ForEach(STTProviderKind.allCases, id: \.self) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.mini)
+            .labelsHidden()
+
+            Text(companionManager.selectedSTTProvider.caption)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Voice / Text-to-Speech (G2.2)
+
+    /// Lets the user pick the TTS backend and a voice for it, with a tap-to-preview
+    /// per voice. ElevenLabs stays the default so the current pipeline is unchanged.
+    /// Extracted into its own view so it can `@ObservedObject` the TTS manager and
+    /// re-render when the active provider / playback state changes.
+    private var voiceSection: some View {
+        VoiceSettingsSection(ttsProviderManager: companionManager.ttsProviderManager)
     }
 
     // MARK: - On-screen Surface (Hub / Dock)
@@ -878,6 +924,108 @@ struct AgentEndpointSettingsView: View {
                             .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
                     )
                     .onChange(of: token) { newValue in onTokenChange(newValue) }
+            }
+        }
+    }
+}
+
+/// Voice / text-to-speech settings: a TTS-provider picker, the active provider's
+/// voice list (radio-style selection), and a tap-to-preview button per voice.
+/// Observes the TTS manager directly so the voice list updates when the provider
+/// changes and preview buttons reflect playback state.
+struct VoiceSettingsSection: View {
+    @ObservedObject var ttsProviderManager: TTSProviderManager
+
+    /// The voice id currently auditioning, so its preview button can show a spinner.
+    @State private var previewingVoiceID: String?
+    @State private var voicePreviewError: String?
+
+    var body: some View {
+        let activeProvider = ttsProviderManager.activeProvider
+        let voices = ttsProviderManager.availableVoices(for: activeProvider)
+        let selectedVoiceID = ttsProviderManager.selectedVoiceID(for: activeProvider)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Voice")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Picker("", selection: Binding(
+                get: { activeProvider },
+                set: { ttsProviderManager.setActiveProvider($0) }
+            )) {
+                ForEach(TTSProviderKind.allCases, id: \.self) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.mini)
+            .labelsHidden()
+
+            Text(activeProvider.caption)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Voice list with a per-voice preview button. Each row selects the voice
+            // (radio-style) and the play button auditions it; the selection is highlighted.
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(voices) { voice in
+                    voiceRow(voice, isSelected: voice.identifier == selectedVoiceID, provider: activeProvider)
+                }
+            }
+
+            if let voicePreviewError {
+                Text(voicePreviewError)
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.warningText)
+            }
+        }
+    }
+
+    private func voiceRow(_ voice: TTSVoiceOption, isSelected: Bool, provider: TTSProviderKind) -> some View {
+        HStack(spacing: 8) {
+            Button(action: {
+                ttsProviderManager.setSelectedVoiceID(voice.identifier, for: provider)
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 10))
+                        .foregroundColor(isSelected ? DS.Colors.blue400 : DS.Colors.textTertiary)
+                    Text(voice.displayName)
+                        .font(.system(size: 10))
+                        .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button(action: { previewVoice(voice.identifier, for: provider) }) {
+                if previewingVoiceID == voice.identifier {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "play.circle")
+                        .font(.system(size: 12))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(previewingVoiceID != nil)
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func previewVoice(_ voiceID: String, for provider: TTSProviderKind) {
+        guard previewingVoiceID == nil else { return }
+        previewingVoiceID = voiceID
+        voicePreviewError = nil
+        Task { @MainActor in
+            defer { previewingVoiceID = nil }
+            do {
+                try await ttsProviderManager.previewVoice(voiceID, for: provider)
+            } catch {
+                voicePreviewError = "Preview failed: \(error.localizedDescription.prefix(80))"
             }
         }
     }

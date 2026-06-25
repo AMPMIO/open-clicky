@@ -289,7 +289,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -316,6 +316,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
+    }
+
+    /// Rebuilds the active transcription provider from the persisted user choice
+    /// (Settings → Speech-to-text). Called after the selection changes so the next
+    /// push-to-talk uses the new backend. A dictation in progress is cancelled first
+    /// so we never swap the provider out from under a live session.
+    func reloadTranscriptionProviderFromUserSelection() {
+        if isDictationInProgress {
+            cancelCurrentDictation(preserveDraftText: false)
+        }
+        let rebuiltTranscriptionProvider = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        transcriptionProvider = rebuiltTranscriptionProvider
+        transcriptionProviderDisplayName = rebuiltTranscriptionProvider.displayName
     }
 
     func startPersistentDictationFromMicrophoneButton(
@@ -468,7 +481,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         microphoneButtonRecordingStartedAt = nil
         lastRecordedAudioPowerSampleDate = .distantPast
 
-        guard !Task.isCancelled else {
+        // A quick push-to-talk release lands here as a cancelled start task. For cloud
+        // providers nothing has streamed yet, so cancelling to empty is correct. For an
+        // on-device provider that starts instantly (Apple Speech), a short utterance was
+        // likely already spoken, so we instead start the session and finalize it below —
+        // this is the fix for the lost-short-utterance bug.
+        if Task.isCancelled && transcriptionProvider.cancelsOnQuickReleaseDuringSessionStart {
             print("🎙️ BuddyDictationManager: start cancelled (shortcut released before recording began)")
             resetSessionState()
             return
@@ -476,12 +494,24 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         do {
             try await startRecognitionSession()
-            guard !Task.isCancelled else {
-                print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
-                audioEngine.stop()
-                audioEngine.inputNode.removeTap(onBus: 0)
-                activeTranscriptionSession?.cancel()
-                resetSessionState()
+            if Task.isCancelled {
+                if transcriptionProvider.cancelsOnQuickReleaseDuringSessionStart {
+                    print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
+                    audioEngine.stop()
+                    audioEngine.inputNode.removeTap(onBus: 0)
+                    activeTranscriptionSession?.cancel()
+                    resetSessionState()
+                    return
+                }
+
+                // On-device path: the session started and the audio tap captured the
+                // short hold. The shortcut is already released (that's why we're
+                // cancelled), so don't tear the session down — finalize whatever was
+                // captured. stopPushToTalk ran too early (before activeStartSource was
+                // set) and bailed, so drive finalization from here instead.
+                isPreparingToRecord = false
+                print("🎙️ BuddyDictationManager: shortcut released during on-device session start — finalizing captured audio")
+                finalizeSessionAfterQuickRelease(startSource: startSource)
                 return
             }
             if startSource == .microphoneButton {
@@ -510,6 +540,44 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         guard !isFinalizingTranscript else { return }
 
         print("🎙️ BuddyDictationManager: stop requested (\(expectedStartSource))")
+
+        isRecordingFromMicrophoneButton = false
+        isRecordingFromKeyboardShortcut = false
+        isFinalizingTranscript = true
+
+        let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
+            ?? Self.defaultFinalTranscriptFallbackDelaySeconds
+
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        activeTranscriptionSession?.requestFinalTranscript()
+
+        finalizeFallbackWorkItem?.cancel()
+        let shouldSubmitFinalDraftWhenFallbackTriggers = shouldAutomaticallySubmitFinalDraft
+        let fallbackWorkItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.finishCurrentDictationSessionIfNeeded(
+                    shouldSubmitFinalDraft: shouldSubmitFinalDraftWhenFallbackTriggers
+                )
+            }
+        }
+        finalizeFallbackWorkItem = fallbackWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + finalTranscriptFallbackDelaySeconds,
+            execute: fallbackWorkItem
+        )
+    }
+
+    /// Finalizes an on-device session whose push-to-talk was released so fast that the
+    /// stop arrived before the start task finished. The audio engine + transcription
+    /// session are already up (they captured the short hold), so this mirrors the tail
+    /// of `stopPushToTalk`: stop the engine, ask the provider for its final transcript,
+    /// and arm the fallback so a stuck session still resolves. It must run only when the
+    /// session is actually active and not already finalizing.
+    private func finalizeSessionAfterQuickRelease(startSource: BuddyDictationStartSource) {
+        guard activeStartSource == startSource else { return }
+        guard !isFinalizingTranscript else { return }
+        guard !hasFinishedCurrentDictationSession else { return }
 
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false

@@ -23,6 +23,11 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
     let isConfigured = true
     let unavailableExplanation: String? = nil
 
+    // On-device recognition starts ~instantly, so a quick push-to-talk release that
+    // lands during session start has usually still captured a short utterance.
+    // Opt out of cancel-on-release so that "test" isn't thrown away (the live bug).
+    let cancelsOnQuickReleaseDuringSessionStart = false
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,

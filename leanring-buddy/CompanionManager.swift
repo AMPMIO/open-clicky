@@ -99,15 +99,11 @@ final class CompanionManager: ObservableObject {
         surfacePanelManager.apply(mode: surfaceMode, corner: corner, companionManager: self)
     }
 
-    /// TTS proxy reads the configured Worker base URL (single source of truth in
-    /// ProviderConfiguration) so the Settings "Worker URL" field reaches TTS too.
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        // Seed with the validated route if available, else the (https) placeholder;
-        // the URL is re-validated and refreshed before every speak (see below).
-        let seed = ProviderConfiguration.workerRouteURL("/tts")?.absoluteString
-            ?? "\(ProviderConfiguration.defaultWorkerBaseURL)/tts"
-        return ElevenLabsTTSClient(proxyURL: seed)
-    }()
+    /// Multi-provider TTS manager (G2.2). Owns the ElevenLabs / OpenAI / on-device
+    /// backends and the user's per-provider voice choice, and refreshes the Worker
+    /// route before each speak. ElevenLabs stays the default so the voice pipeline is
+    /// unchanged unless the user picks another provider in Settings.
+    let ttsProviderManager = TTSProviderManager()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -537,7 +533,7 @@ final class CompanionManager: ObservableObject {
                 await currentResponseTask?.value
                 if Task.isCancelled || activeReplayID != replayID { break }
                 var waitedTicks = 0
-                while elevenLabsTTSClient.isPlaying, waitedTicks < 120 {
+                while ttsProviderManager.isPlaying, waitedTicks < 120 {
                     if Task.isCancelled || activeReplayID != replayID { return }
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     waitedTicks += 1
@@ -1058,7 +1054,7 @@ final class CompanionManager: ObservableObject {
 
         // Cancel any in-progress response and TTS from a previous utterance
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        ttsProviderManager.stopPlayback()
         clearDetectedElementLocation()
 
         // Dismiss the onboarding prompt if it's showing
@@ -1197,7 +1193,7 @@ final class CompanionManager: ObservableObject {
         }
 
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        ttsProviderManager.stopPlayback()
 
         currentResponseTask = Task {
             // Don't capture the user's screens (or fire a request) if the active
@@ -1468,25 +1464,21 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
+                // Play the response via TTS through the active provider (ElevenLabs by
+                // default, or OpenAI / on-device System Voice). Keep the spinner
+                // (processing state) until the audio actually starts playing, then
+                // switch to responding. The manager refreshes the Worker route and
+                // fails closed for network providers when the Worker URL is unset.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if let ttsURL = ProviderConfiguration.workerRouteURL("/tts") {
-                        do {
-                            // Refresh the TTS endpoint in case the Worker URL changed in Settings.
-                            elevenLabsTTSClient.updateProxyURL(ttsURL.absoluteString)
-                            try await elevenLabsTTSClient.speakText(spokenText)
-                            // speakText returns after player.play() — audio is now playing
-                            voiceState = .responding
-                        } catch {
-                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                            print("⚠️ ElevenLabs TTS error: \(error)")
-                            ClickyTelemetry.pipeline.error("TTS failure")
-                            speakCreditsErrorFallback()
-                        }
-                    } else {
-                        // Fail closed: never POST TTS text to a non-loopback cleartext Worker URL.
-                        print("⚠️ TTS skipped: Worker URL is not a valid loopback/https endpoint")
+                    do {
+                        try await ttsProviderManager.speakText(spokenText)
+                        // speakText returns after playback starts — audio is now playing
+                        voiceState = .responding
+                    } catch {
+                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                        print("⚠️ TTS error: \(error)")
+                        ClickyTelemetry.pipeline.error("TTS failure")
+                        speakCreditsErrorFallback()
                     }
                 }
             } catch is CancellationError {
@@ -1515,7 +1507,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while ttsProviderManager.isPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
