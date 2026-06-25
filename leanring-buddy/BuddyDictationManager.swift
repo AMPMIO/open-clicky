@@ -109,10 +109,53 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .rightCommand
+    /// The built-in shortcut used when the user hasn't recorded a custom one. Right ⌘ needs
+    /// the device-dependent detection path below; a recorded shortcut overrides it entirely.
+    static let defaultShortcutOption: ShortcutOption = .rightCommand
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
+
+    /// Human-readable name of the ACTIVE shortcut — the user's recorded shortcut if set,
+    /// otherwise the built-in default. Computed (not a stored `let`) so the panel's
+    /// "Hold … to talk" text and the monitor's logging reflect a freshly recorded shortcut.
+    static var pushToTalkDisplayText: String {
+        recordedShortcut?.displayText ?? defaultShortcutOption.displayText
+    }
+    static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
+
+    // MARK: Recorded (user-configurable) shortcut — OC-104
+
+    private static let recordedShortcutDefaultsKey = "pushToTalkRecordedShortcut"
+
+    // Decoded recorded shortcut, cached so the CGEvent tap — which fires on every system-wide
+    // keystroke — doesn't decode JSON from UserDefaults on every event. All access is on the
+    // main thread (the tap runs on the main run loop; the recorder UI is @MainActor), so this
+    // main-thread-confined mutable static is safe; nonisolated(unsafe) documents that intent.
+    nonisolated(unsafe) private static var cachedRecordedShortcut: RecordedPushToTalkShortcut?
+    nonisolated(unsafe) private static var didLoadRecordedShortcut = false
+
+    /// The user's recorded push-to-talk shortcut, or nil to use the built-in default. Read by
+    /// the transition logic, the panel display text, and the monitor's logging; written by the
+    /// Settings recorder. Persisted in UserDefaults as JSON.
+    static var recordedShortcut: RecordedPushToTalkShortcut? {
+        get {
+            if !didLoadRecordedShortcut {
+                if let data = UserDefaults.standard.data(forKey: recordedShortcutDefaultsKey) {
+                    cachedRecordedShortcut = try? JSONDecoder().decode(RecordedPushToTalkShortcut.self, from: data)
+                }
+                didLoadRecordedShortcut = true
+            }
+            return cachedRecordedShortcut
+        }
+        set {
+            cachedRecordedShortcut = newValue
+            didLoadRecordedShortcut = true
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: recordedShortcutDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: recordedShortcutDefaultsKey)
+            }
+        }
+    }
 
     static func shortcutTransition(
         for event: NSEvent,
@@ -136,10 +179,24 @@ enum BuddyPushToTalkShortcut {
     ) -> ShortcutTransition {
         guard let shortcutEventType = shortcutEventType(for: eventType) else { return .none }
 
+        // A user-recorded shortcut overrides the built-in default. Match it device-
+        // independently (the recorder captures standard modifier flags, not the left/right
+        // device bit), reusing the shared modifier-only / key+modifier logic.
+        if let recordedShortcut {
+            return shortcutTransition(
+                for: shortcutEventType,
+                keyCode: keyCode,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+                    .intersection(.deviceIndependentFlagsMask),
+                recordedShortcut: recordedShortcut,
+                wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed
+            )
+        }
+
         // RIGHT ⌘ needs the raw CGEvent device bit (0x10) that NSEvent's
         // deviceIndependentFlagsMask strips, so left-⌘ shortcuts (⌘C etc.) never
         // trigger push-to-talk. Bits: 0x100000 = ⌘ mask, 0x08 = left ⌘, 0x10 = right ⌘.
-        if currentShortcutOption == .rightCommand {
+        if defaultShortcutOption == .rightCommand {
             guard shortcutEventType == .flagsChanged else { return .none }
             let isRightCommandHeld = (modifierFlagsRawValue & 0x100000) != 0
                 && (modifierFlagsRawValue & 0x10) != 0
@@ -189,7 +246,7 @@ enum BuddyPushToTalkShortcut {
         modifierFlags: NSEvent.ModifierFlags,
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
-        if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
+        if let modifierOnlyFlags = defaultShortcutOption.modifierOnlyFlags {
             guard shortcutEventType == .flagsChanged else { return .none }
 
             let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
@@ -205,7 +262,7 @@ enum BuddyPushToTalkShortcut {
             return .none
         }
 
-        guard let pushToTalkModifierFlags = currentShortcutOption.spaceShortcutModifierFlags else {
+        guard let pushToTalkModifierFlags = defaultShortcutOption.spaceShortcutModifierFlags else {
             return .none
         }
 
@@ -225,6 +282,98 @@ enum BuddyPushToTalkShortcut {
         }
 
         return .none
+    }
+
+    /// Generalized transition matcher for a user-recorded shortcut (device-independent).
+    /// Mirrors the default modifier-only / key+modifier logic, parameterized by the recorded
+    /// shortcut instead of `defaultShortcutOption`.
+    private static func shortcutTransition(
+        for shortcutEventType: ShortcutEventType,
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        recordedShortcut: RecordedPushToTalkShortcut,
+        wasShortcutPreviouslyPressed: Bool
+    ) -> ShortcutTransition {
+        let requiredModifierFlags = recordedShortcut.modifierFlags
+
+        if let requiredKeyCode = recordedShortcut.keyCode {
+            // Key + modifiers: press the key while holding (at least) the recorded modifiers.
+            let matchesModifierFlags = modifierFlags.isSuperset(of: requiredModifierFlags)
+            if shortcutEventType == .keyDown
+                && keyCode == requiredKeyCode
+                && matchesModifierFlags
+                && !wasShortcutPreviouslyPressed {
+                return .pressed
+            }
+            if shortcutEventType == .keyUp
+                && keyCode == requiredKeyCode
+                && wasShortcutPreviouslyPressed {
+                return .released
+            }
+            // #1(b): the only thing emitting .released for a key+modifier shortcut is the key's
+            // .keyUp, so a missed keyUp (a tap-disable window, focus/Space change) would wedge
+            // the session pressed until restart. Also release when the held modifiers drop
+            // below the required set while pressed — losing the modifiers tears it down too.
+            // (The CGEvent-tap synthetic-.released-on-tap-disable fix is OC1's, in G8.)
+            if shortcutEventType == .flagsChanged
+                && wasShortcutPreviouslyPressed
+                && !modifierFlags.isSuperset(of: requiredModifierFlags) {
+                return .released
+            }
+            return .none
+        }
+
+        // Modifier-only (e.g. Fn): require the held modifiers to EQUAL the recorded set (after
+        // masking to the relevant modifiers), so a recorded ⌃⌥ doesn't also fire while ⌃⌥⌘ is
+        // held. (#2 — the device-specific right-⌘ default path keeps its own matching.)
+        guard shortcutEventType == .flagsChanged else { return .none }
+        let relevantModifierMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
+        let requiredRelevantFlags = requiredModifierFlags.intersection(relevantModifierMask)
+        let activeRelevantFlags = modifierFlags.intersection(relevantModifierMask)
+        let isShortcutCurrentlyPressed = !requiredRelevantFlags.isEmpty
+            && activeRelevantFlags == requiredRelevantFlags
+        if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
+            return .pressed
+        }
+        if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
+            return .released
+        }
+        return .none
+    }
+}
+
+/// A user-recorded push-to-talk shortcut. `keyCode == nil` is a modifier-only shortcut (hold
+/// the modifiers, e.g. Fn); otherwise it's a key held together with the modifiers.
+/// `modifierFlagsRawValue` stores device-independent `NSEvent.ModifierFlags`.
+struct RecordedPushToTalkShortcut: Codable, Equatable {
+    let modifierFlagsRawValue: UInt
+    let keyCode: UInt16?
+    /// Human-readable label for `keyCode`, captured at record time (e.g. "space", "A").
+    let keyLabel: String?
+
+    var modifierFlags: NSEvent.ModifierFlags {
+        NSEvent.ModifierFlags(rawValue: modifierFlagsRawValue)
+    }
+
+    /// Symbolic name shown in the panel's "Hold … to talk" text (e.g. "⌃ ⌥", "fn", "⌃ ⌥ space").
+    var displayText: String {
+        var parts: [String] = []
+        if modifierFlags.contains(.control) { parts.append("⌃") }
+        if modifierFlags.contains(.option) { parts.append("⌥") }
+        if modifierFlags.contains(.shift) { parts.append("⇧") }
+        if modifierFlags.contains(.command) { parts.append("⌘") }
+        if modifierFlags.contains(.function) { parts.append("fn") }
+        if let keyLabel { parts.append(keyLabel) }
+        return parts.joined(separator: " ")
+    }
+
+    /// True when this is a single common modifier (⌘/⌥/⌃/⇧) held alone — no key, not Fn —
+    /// which would clash with system shortcuts like ⌘C. Used to surface a non-blocking caution
+    /// in Settings; the shortcut is still allowed (modifier-only hold IS the intended UX).
+    var isLoneCommonModifier: Bool {
+        guard keyCode == nil, !modifierFlags.contains(.function) else { return false }
+        let commonModifiers: [NSEvent.ModifierFlags] = [.command, .option, .control, .shift]
+        return commonModifiers.filter { modifierFlags.contains($0) }.count == 1
     }
 }
 
