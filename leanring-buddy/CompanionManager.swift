@@ -756,6 +756,10 @@ final class CompanionManager: ObservableObject {
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
+        // G8 (OC-107): explicitly restore click-through before tearing down the overlay so
+        // deactivating the companion can never leave a window swallowing the user's mouse,
+        // independent of how hideOverlay disposes of its windows.
+        overlayWindowManager.disarmAndDiscardCircleGestureCapture()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
