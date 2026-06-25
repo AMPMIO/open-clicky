@@ -1,5 +1,77 @@
 # Changelog
 
+## [Unreleased] — Wave 2: Fix, Speed, Parity & Differentiation (G1–G8)
+
+> The core loop works on-device (right-⌘ push-to-talk → screenshot → Qwen3-VL via OpenRouter →
+> spoken answer + pointing). Wave 2 fixes the rough edges, adds speed + Settings parity vs the
+> commercial HeyClicky, and adds differentiators. Branch `feature/opus-features-f1-f7`; CI
+> `build-check` is the compile gate (terminal `xcodebuild` is disallowed). "Shipped" = merged to
+> the branch + CI green; on-device Xcode run is the final gate.
+
+### G1 — Fix the core experience ✅ (shipped)
+
+- **Right-⌘ push-to-talk + double-tap latch.** Switched the global shortcut to the right Command
+  key (the user's NuPhy Fn emits no hardware event), detected via the raw device bit. Double-
+  tapping right-⌘ latches recording on (hold-to-talk → tap-to-stop), hold-vs-tap disambiguated.
+  Removed the keystroke-logging diagnostics (security). (`GlobalPushToTalkShortcutMonitor.swift`,
+  `BuddyDictationManager.swift`, `CompanionManager.swift`)
+- **Hands-On Mode actuates.** Added few-shot `[ACT:press:x,y:label:screenN]` examples to the
+  system prompt and re-anchored `parseActionTag` to tolerate trailing punctuation while still
+  forcing the tag last; narrowed the destructive-action denylist so common buttons (close/quit)
+  aren't blocked; added `ClickyTelemetry.handsOn` diagnostics. (`CompanionManager.swift`)
+- **Short utterances no longer silently dropped.** The empty-final-transcript guard now logs +
+  surfaces feedback instead of dropping; latch/deferred-stop timing hardened per adversarial
+  review. (Root cause fully addressed by G2's on-device STT default.) (`BuddyDictationManager.swift`)
+- Hardened per an adversarial review pass. (commits bd5d603, 85e8fb3, 460f93d)
+
+### G2 — Speed: on-device STT + configurable TTS ✅ (shipped)
+
+- **G2.1 On-device STT default.** Apple Speech is now the default transcription provider so a
+  short push-to-talk hold ("go") isn't lost to the cloud session-start race. Added
+  `cancelsOnQuickReleaseDuringSessionStart` (cloud cancels a release during connect; on-device
+  keeps the capture) and a UserDefaults-first provider choice (Info.plist as fallback).
+  (`BuddyTranscriptionProvider.swift`, `AppleSpeechTranscriptionProvider.swift`, `BuddyDictationManager.swift`)
+- **G2.2 Configurable TTS layer.** New `TTSProvider` protocol + `TTSProviderManager` with
+  ElevenLabs (default), OpenAI TTS (new Worker `/tts-openai` route, server-held key), and
+  on-device `AVSpeechSynthesizer` backends. Per-provider voice selection, tap-to-preview,
+  per-request ElevenLabs voice id, fail-closed when a network provider has no Worker route.
+  (`TTSProvider.swift`, `TTSProviderManager.swift`, `OpenAITTSClient.swift`, `SystemVoiceTTSClient.swift`,
+  `ElevenLabsTTSClient.swift`, `worker/src/index.ts`, `SettingsView.swift`) (commit 44e03f8)
+- **G2 adversarial review fixes.** `/tts-openai`: input char cap (→413) + 30s `AbortController`
+  timeout + clear 500 when `OPENAI_API_KEY` is unset (no more `Bearer undefined`). SystemVoice
+  `isPlaying` now tracked via the synth delegate (with an `ObjectIdentifier` guard) so the
+  overlay-hide / macro-wait loops don't exit before audio plays. (commit 12fe167) Three
+  pre-existing legacy-`NSSpeechSynthesizer` findings deferred to **OC-110** (fix after G8 merges).
+
+### G4 — On-screen surface: Hub / Dock ✅ (shipped)
+
+- **Persistent surface.** `SurfacePanelManager` adds an always-visible, borderless, non-activating,
+  all-Spaces panel in two presentations switchable in Settings (Off / **Hub** / Dock): a corner
+  dashboard (configurable corner, liquid-glass via `.ultraThinMaterial`, hover-to-reveal pill↔card)
+  and a notch Dock. `sharingType = .none`. (`SurfacePanelManager.swift`, `SettingsView.swift`,
+  `CompanionManager.swift`) (commit 3150919)
+
+### G5 — Agents panel ✅ (shipped)
+
+- **Run model + panel.** `AgentRunManager` (`@Published runs` capped at 20; stages
+  starting/processing/awaiting-confirmation/executing/complete/failed) and `AgentsPanel` cards
+  (title + agent + stage dot, expandable log), surfaced live in the Hub. (`AgentRunManager.swift`,
+  `AgentsPanel.swift`, `SurfacePanelManager.swift`, `CompanionManager.swift`) (commits fe46714, 71bd414)
+
+### In progress
+
+- **G8 — Circle-to-point reference gesture (OC-107, OC1).** Hold PTT + circle a screen region to
+  ask "what's *this*?"; the overlay captures the gesture and sends the annotated screenshot.
+  Isolated worktree off the branch (`feature/g8-circle-to-point`).
+- **G3.3 voice picker + preview (OC-108 ✅ CI green) and G3.2 mic picker + test meter (OC-109,
+  in progress) (OC2).** Settings parity. Branch `feature/g3-voice-mic-pickers`.
+
+### Filed for later
+
+- **OC-105** — multi-monitor cursor/overlay doesn't follow onto a secondary display.
+- **OC-106** — `[POINT]`/`[ACT]` coordinates land off-target (proposed Accessibility-snapping fix).
+- **OC-110** — unify the legacy `NSSpeechSynthesizer` into TTS stop/state (G2 review follow-up).
+
 ## [Unreleased] — Feature wave (F1–F7, Linear epics OC-6…OC-12)
 
 > These are net-new features that lean on Accessibility actuation, system audio, OAuth, and
