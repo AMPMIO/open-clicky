@@ -58,13 +58,28 @@
   (title + agent + stage dot, expandable log), surfaced live in the Hub. (`AgentRunManager.swift`,
   `AgentsPanel.swift`, `SurfacePanelManager.swift`, `CompanionManager.swift`) (commits fe46714, 71bd414)
 
+### G3 — Settings parity ✅ (voice + mic pickers; shipped)
+
+- **G3.3 voice picker + preview (OC-108).** Settings grid of voices for the active TTS provider
+  with tap-to-audition (`previewVoice`, persist-before-preview), checkmark selection, pointer
+  cursors, empty-state. `setSelectedVoiceID` now sends `objectWillChange` so the selection repaints.
+  (`SettingsView.swift`, `TTSProviderManager.swift`)
+- **G3.2 mic picker + test meter (OC-109).** Microphone input picker (CoreAudio enumeration,
+  device UID persisted) + a "test mic" level meter sharing the single `audioEngine` (mutually
+  exclusive with dictation). Adversarial-review fixes: uninitialize the input AU before setting
+  `kAudioOutputUnitProperty_CurrentDevice` (so switching works past session 1), rebind to the
+  system default input when a saved device is absent (guarded by `hasBoundCustomInputDevice` so the
+  default-mic flow stays an untouched no-op), re-enumerate on test-toggle. **On-device validation
+  pending** for the custom-mic AVAudioEngine re-init path. (`SettingsView.swift`,
+  `BuddyDictationManager.swift`) (merged in 2fb80a8)
+
 ### In progress
 
 - **G8 — Circle-to-point reference gesture (OC-107, OC1).** Hold PTT + circle a screen region to
   ask "what's *this*?"; the overlay captures the gesture and sends the annotated screenshot.
-  Isolated worktree off the branch (`feature/g8-circle-to-point`).
-- **G3.3 voice picker + preview (OC-108 ✅ CI green) and G3.2 mic picker + test meter (OC-109,
-  in progress) (OC2).** Settings parity. Branch `feature/g3-voice-mic-pickers`.
+  CI-green; under adversarial review before merge.
+- **G3.1 — User-configurable PTT shortcut recorder (OC-104, OC2).** Record-your-own hotkey in
+  Settings, read by the PTT monitor + panel display. Branch `feature/oc104-ptt-shortcut-recorder`.
 
 ### Filed for later
 
