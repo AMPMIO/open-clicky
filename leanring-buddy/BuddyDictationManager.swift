@@ -351,6 +351,15 @@ struct RecordedPushToTalkShortcut: Codable, Equatable {
         if let keyLabel { parts.append(keyLabel) }
         return parts.joined(separator: " ")
     }
+
+    /// True when this is a single common modifier (⌘/⌥/⌃/⇧) held alone — no key, not Fn —
+    /// which would clash with system shortcuts like ⌘C. Used to surface a non-blocking caution
+    /// in Settings; the shortcut is still allowed (modifier-only hold IS the intended UX).
+    var isLoneCommonModifier: Bool {
+        guard keyCode == nil, !modifierFlags.contains(.function) else { return false }
+        let commonModifiers: [NSEvent.ModifierFlags] = [.command, .option, .control, .shift]
+        return commonModifiers.filter { modifierFlags.contains($0) }.count == 1
+    }
 }
 
 enum BuddyDictationPermissionProblem {

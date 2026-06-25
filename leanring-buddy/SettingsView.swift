@@ -1274,6 +1274,17 @@ private struct PushToTalkShortcutSettingsSection: View {
                     .pointerCursor()
                 }
             }
+
+            // Non-blocking caution: a lone common modifier (⌘/⌥/⌃/⇧) clashes with system
+            // shortcuts like ⌘C. Still fully recordable — modifier-only hold is the intended
+            // push-to-talk UX (the right-⌘ default is device-specific and won't trip this).
+            if !shortcutRecorder.isRecording,
+               BuddyPushToTalkShortcut.recordedShortcut?.isLoneCommonModifier == true {
+                Text("This may interfere with system shortcuts like ⌘C.")
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .onAppear {
             shortcutRecorder.onCapture = { recordedShortcut in
