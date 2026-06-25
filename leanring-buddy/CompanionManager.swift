@@ -397,6 +397,19 @@ final class CompanionManager: ObservableObject {
     you are quietly watching the user's screen in the background. only speak up when there is something genuinely useful and timely to say (an error you can explain, a clearly stuck state, an obvious next step). be brief and non-intrusive — if in doubt, say nothing. respond with 'NUDGE: <one short sentence>' or exactly 'NONE'. never point or act in this mode.
     """
 
+    // MARK: - Circle-to-Point Reference Gesture (G8 / OC-107)
+
+    /// Freehand "circle this region" path (global AppKit points, bottom-left origin)
+    /// captured during the last push-to-talk hold, consumed by the next send. nil when
+    /// the user didn't draw a qualifying gesture.
+    private var pendingCircleGesturePoints: [CGPoint]?
+
+    /// Appended to the system prompt only when the outgoing screenshot was annotated with
+    /// a circle, so Claude treats the ring as "this / here" and focuses there.
+    private static let circleToPointInstructions = """
+    the user drew a freehand circle directly on their screen to point at something — it is marked with a bright blue ring in the screenshot. treat that ring as 'this' or 'here' in their request and focus your answer on whatever is inside it. the ring is an annotation the user added in order to point, not part of their actual screen content, so don't describe the ring itself.
+    """
+
     // MARK: - Spoken Macros (F5)
 
     private var macroRecordingName: String?
@@ -1003,6 +1016,9 @@ final class CompanionManager: ObservableObject {
         if pressWasDoubleTap {
             pressWasDoubleTap = false
             isLatchedRecording = true
+            // G8 (OC-107): hands-free latched recording must not keep swallowing the
+            // mouse, so drop gesture capture (and any partial drag) for this session.
+            overlayWindowManager.disarmAndDiscardCircleGestureCapture()
             return
         }
 
@@ -1026,6 +1042,9 @@ final class CompanionManager: ObservableObject {
     private func stopAndSubmitRecording() {
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = nil
+        // G8 (OC-107): grab any circle-this gesture drawn during the hold BEFORE the
+        // transcript submits, so the send path can annotate the screenshot with it.
+        pendingCircleGesturePoints = overlayWindowManager.collectAndDisarmCircleGestureCapture()
         buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
     }
 
@@ -1048,6 +1067,11 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
+
+        // G8 (OC-107): arm circle-to-point capture so a left-drag during this push-to-talk
+        // hold is recorded as a "what's this?" region. The overlay only intercepts the
+        // mouse while armed; collectAndDisarm / disarmAndDiscard restore click-through.
+        overlayWindowManager.armCircleGestureCapture()
 
         // Dismiss the menu bar panel so it doesn't cover the screen
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
@@ -1210,10 +1234,28 @@ final class CompanionManager: ObservableObject {
 
             do {
                 // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                var screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
                 ClickyTelemetry.pipeline.info("capture done screens=\(screenCaptures.count, privacy: .public)")
 
                 guard !Task.isCancelled else { return }
+
+                // G8 (OC-107): if the user circled a region during push-to-talk, draw that
+                // freehand loop onto the matching screenshot so Claude sees exactly what
+                // "this" refers to. didAnnotateCircleGesture drives the system-prompt hint.
+                var didAnnotateCircleGesture = false
+                if let circleGesturePoints = pendingCircleGesturePoints {
+                    pendingCircleGesturePoints = nil
+                    if CircleToPointGesture.isQualifyingGesture(circleGesturePoints) {
+                        let gestureCenter = CircleToPointGesture.centerGlobalPoint(ofGlobalPoints: circleGesturePoints)
+                        if let targetScreenIndex = screenCaptures.firstIndex(where: { $0.displayFrame.contains(gestureCenter) }),
+                           let annotatedImageData = CircleToPointGesture.annotatedScreenshot(
+                               of: screenCaptures[targetScreenIndex], withGlobalPath: circleGesturePoints) {
+                            screenCaptures[targetScreenIndex].imageData = annotatedImageData
+                            didAnnotateCircleGesture = true
+                            ClickyTelemetry.pipeline.info("circle-to-point annotation applied screenIndex=\(targetScreenIndex, privacy: .public)")
+                        }
+                    }
+                }
 
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
@@ -1279,7 +1321,8 @@ final class CompanionManager: ObservableObject {
                         + Self.activeAppGuidanceAddendum()
                         + (isHandsOnModeEnabled ? Self.handsOnModeInstructions : "")
                         + (isTerminalBridgeEnabled ? Self.terminalBridgeInstructions : "")
-                        + (isLiveCompanionEnabled ? Self.liveCompanionInstructions : ""),
+                        + (isLiveCompanionEnabled ? Self.liveCompanionInstructions : "")
+                        + (didAnnotateCircleGesture ? Self.circleToPointInstructions : ""),
                     conversationHistory: historyForAPI,
                     userPrompt: userPromptForModel,
                     model: selectedModel,
