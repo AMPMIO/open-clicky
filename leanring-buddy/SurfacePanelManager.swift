@@ -65,6 +65,7 @@ final class SurfacePanelManager: NSObject {
 
         let surfaceView = SurfaceView(
             companionManager: companionManager,
+            agentRunManager: companionManager.agentRunManager,
             mode: mode,
             onHoverChange: { [weak self] hovering in
                 self?.setHubExpanded(hovering)
@@ -151,6 +152,7 @@ final class SurfacePanelManager: NSObject {
 /// toggles + live agent runs land with G5.
 struct SurfaceView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var agentRunManager: AgentRunManager
     let mode: SurfaceMode
     let onHoverChange: (Bool) -> Void
 
@@ -184,7 +186,15 @@ struct SurfaceView: View {
     private var hubPill: some View {
         HStack(spacing: 6) {
             Text(eyeGlyph).font(.system(size: 16))
-            Circle().fill(statusColor).frame(width: 7, height: 7)
+            // Active-run count takes priority over the idle status dot so the user
+            // sees at-a-glance that an agent run is in flight (G5).
+            if agentRunManager.activeRunCount > 0 {
+                Text("\(agentRunManager.activeRunCount)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DS.Colors.accentText)
+            } else {
+                Circle().fill(statusColor).frame(width: 7, height: 7)
+            }
         }
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -205,10 +215,9 @@ struct SurfaceView: View {
             statusRow("Model", providerLabel)
             statusRow("Hands-On", companionManager.isHandsOnModeEnabled ? "On" : "Off")
             statusRow("Watch", companionManager.isWatchModeEnabled ? "On" : "Off")
+            Divider().opacity(0.4)
+            recentRuns
             Spacer(minLength: 0)
-            Text("agent runs coming soon")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -220,6 +229,44 @@ struct SurfaceView: View {
             Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.system(size: 11, weight: .medium)).lineLimit(1)
+        }
+    }
+
+    /// A compact live list of the most recent agent runs (G5). Shows the 3 newest,
+    /// each as a stage-colored dot + title + stage label, or a quiet empty state.
+    @ViewBuilder
+    private var recentRuns: some View {
+        let runs = agentRunManager.runs.prefix(3)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("Agent runs")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                if agentRunManager.activeRunCount > 0 {
+                    Text("\(agentRunManager.activeRunCount) active")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(DS.Colors.accentText)
+                }
+            }
+            if runs.isEmpty {
+                Text("no agent runs yet")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(runs) { run in
+                    HStack(spacing: 6) {
+                        Circle().fill(run.stage.indicatorColor).frame(width: 6, height: 6)
+                        Text(run.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text(run.stage.displayLabel)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
         }
     }
 

@@ -114,6 +114,36 @@ class OpenAICompatibleProvider: LLMProvider {
         return (text: accumulatedText, duration: duration)
     }
 
+    // MARK: - Hermes Runs (G5 — NOT YET WIRED)
+
+    // TODO(G5/Hermes): surface Hermes task progress as live agent runs in the Hub.
+    //
+    // This provider currently only speaks the OpenAI-compatible chat-completions
+    // protocol (`baseURL` is a single /v1/chat/completions endpoint, parsed above as
+    // `choices[].delta.content`). It has NO notion of a Hermes "run", and the Hermes
+    // /v1/runs API is not defined anywhere in this codebase, so the run population
+    // below is deliberately left unimplemented rather than guessed at.
+    //
+    // Intended shape, to wire in when the Hermes Agent API is pinned down:
+    //   1. When the active provider is `.hermes` and `hermesActionModeEnabled` is on,
+    //      a task is started against `POST {hermesEndpoint}/v1/runs` (instead of, or
+    //      alongside, the chat-completions call). That returns a run id.
+    //   2. Open an SSE stream for that run (e.g. `GET /v1/runs/{id}/events`) and map
+    //      its events onto an `AgentRun` via `AgentRunManager`:
+    //        - run created            → startRun(title:, agentLabel: "Hermes", stage: .processing)
+    //        - `hermes.tool.progress` → update(id:, appendLog: <tool/step summary>),
+    //                                    stage .executing while a tool is running
+    //        - tool awaiting approval → update(id:, stage: .awaitingConfirmation)
+    //        - run finished           → complete(id:) / fail(id:reason:)
+    //   3. Because this provider isn't @MainActor and `AgentRunManager` is, the
+    //      caller (CompanionManager) must own the AgentRunManager mutations — likely
+    //      via a delegate/closure passed in here, or by exposing an async event
+    //      stream the manager consumes on the main actor.
+    //
+    // Until that API is confirmed, Hermes requests behave exactly like any other
+    // OpenAI-compatible chat (answer + optional [POINT]/[ACT]/[RUN] tags), and the
+    // Terminal/Hands-On run population in CompanionManager covers the differentiator.
+
     // MARK: - Request Building
 
     private func buildRequest(

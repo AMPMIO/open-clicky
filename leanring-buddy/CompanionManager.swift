@@ -72,6 +72,11 @@ final class CompanionManager: ObservableObject {
     /// Multi-provider LLM manager. Handles OpenRouter, OpenClaw, and Worker Proxy modes.
     let providerManager = ProviderManager()
 
+    /// Tracks dispatched agent runs (terminal prompts, confirmed Hands-On clicks,
+    /// and — once wired — Hermes tasks) so the always-visible Hub surface can show
+    /// what Clicky is currently doing. G5.
+    let agentRunManager = AgentRunManager()
+
     // MARK: - Surface (Hub / Dock) — G4
 
     /// Always-visible status surface: corner Hub, notch Dock, or off. Both are
@@ -145,6 +150,24 @@ final class CompanionManager: ObservableObject {
         providerManager.configuration.selectedModelID = model
     }
 
+    // MARK: - Speech-to-Text Provider (G2.1)
+
+    /// The user-selected speech-to-text backend. Defaults to Apple Speech (on-device,
+    /// instant start) so short push-to-talk holds aren't lost to the cloud-session
+    /// start race. Persisted in UserDefaults and read by the transcription factory.
+    @Published var selectedSTTProvider: STTProviderKind = BuddyTranscriptionProviderFactory.selectedProviderKind()
+
+    func setSelectedSTTProvider(_ provider: STTProviderKind) {
+        selectedSTTProvider = provider
+        UserDefaults.standard.set(
+            provider.rawValue,
+            forKey: BuddyTranscriptionProviderFactory.sttProviderUserDefaultsKey
+        )
+        // Rebuild the dictation manager's provider so the next push-to-talk uses it.
+        buddyDictationManager.reloadTranscriptionProviderFromUserSelection()
+        ClickyTelemetry.pipeline.notice("STT provider changed to \(provider.rawValue, privacy: .public)")
+    }
+
     // MARK: - Hands-On Mode (Accessibility actuation)
 
     /// User opt-in for Hands-On Mode. When enabled, Clicky may PROPOSE a single
@@ -157,6 +180,10 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "isHandsOnModeEnabled")
         // Turning the feature off is a kill switch: drop any pending click.
         if !enabled {
+            // Close out the abandoned run so the Hub doesn't show it as still active (G5).
+            if let pending = pendingHandsOnAction {
+                agentRunManager.fail(id: pending.runID, reason: "hands-on mode turned off")
+            }
             pendingHandsOnAction = nil
             clearDetectedElementLocation()
         }
@@ -169,6 +196,9 @@ final class CompanionManager: ObservableObject {
         let label: String
         let frontmostAppBundleID: String?
         let proposedAt: Date
+        /// The agent run tracking this click, so the Hub can show its progress
+        /// from proposal through confirmation to completion (G5).
+        let runID: UUID
     }
     private var pendingHandsOnAction: PendingHandsOnAction?
 
@@ -181,13 +211,22 @@ final class CompanionManager: ObservableObject {
     func setTerminalBridgeEnabled(_ enabled: Bool) {
         isTerminalBridgeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isTerminalBridgeEnabled")
-        if !enabled { pendingTerminalDispatch = nil }
+        if !enabled {
+            // Close out the abandoned run so the Hub doesn't show it as still active (G5).
+            if let pending = pendingTerminalDispatch {
+                agentRunManager.fail(id: pending.runID, reason: "terminal bridge turned off")
+            }
+            pendingTerminalDispatch = nil
+        }
     }
 
     private struct PendingTerminalDispatch {
         let prompt: String
         let terminal: TerminalApp
         let proposedAt: Date
+        /// The agent run tracking this dispatch, so the Hub can show its progress
+        /// from proposal through confirmation to completion (G5).
+        let runID: UUID
     }
     private var pendingTerminalDispatch: PendingTerminalDispatch?
 
@@ -1347,11 +1386,20 @@ final class CompanionManager: ObservableObject {
                                 print("🖐️ Hands-On: refused destructive action \"\(label)\"")
                                 ClickyTelemetry.handsOn.notice("refused destructive action (labelLen)=\(label.count, privacy: .public)")
                             } else {
+                                // Track this click as an agent run from the moment it's
+                                // proposed so the Hub reflects it through confirmation (G5).
+                                let runID = agentRunManager.startRun(
+                                    title: "Click \(label)",
+                                    agentLabel: "Hands-On",
+                                    stage: .awaitingConfirmation,
+                                    initialLogLine: "proposed click on \"\(label)\""
+                                )
                                 pendingHandsOnAction = PendingHandsOnAction(
                                     quartzPoint: AccessibilityActuator.quartzPoint(fromAppKitGlobal: appKitLocation),
                                     label: label,
                                     frontmostAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-                                    proposedAt: Date()
+                                    proposedAt: Date(),
+                                    runID: runID
                                 )
                                 let ask = "i'll click \(label). say go to confirm, or cancel."
                                 spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
@@ -1373,7 +1421,15 @@ final class CompanionManager: ObservableObject {
                     spokenText = runParse.spokenText
                     if let runPrompt = runParse.prompt {
                         if let terminal = TerminalAgentBridge.targetTerminal() {
-                            pendingTerminalDispatch = PendingTerminalDispatch(prompt: runPrompt, terminal: terminal, proposedAt: Date())
+                            // Track this dispatch as an agent run from the moment it's
+                            // proposed so the Hub reflects it through confirmation (G5).
+                            let runID = agentRunManager.startRun(
+                                title: runPrompt,
+                                agentLabel: "Terminal",
+                                stage: .awaitingConfirmation,
+                                initialLogLine: "queued for \(terminal.displayName)"
+                            )
+                            pendingTerminalDispatch = PendingTerminalDispatch(prompt: runPrompt, terminal: terminal, proposedAt: Date(), runID: runID)
                             let ask = "i'll send that to \(terminal.displayName). say go to confirm, or cancel."
                             spokenText = spokenText.isEmpty ? ask : "\(spokenText) \(ask)"
                             print("⌨️ Terminal bridge: pending dispatch to \(terminal.displayName)")
@@ -1583,14 +1639,18 @@ final class CompanionManager: ObservableObject {
         clearDetectedElementLocation()
         // If the feature was turned off after the action was proposed, never act.
         guard isHandsOnModeEnabled else {
+            agentRunManager.fail(id: pending.runID, reason: "hands-on mode turned off")
             speakSystemMessage("hands-on mode is off.")
             return
         }
         switch Self.confirmationVerdict(for: transcript) {
         case .cancel:
+            agentRunManager.fail(id: pending.runID, reason: "cancelled by user")
             speakSystemMessage("okay, cancelled.")
         case .ambiguous:
-            // Not a clear yes/no — don't click; treat it as a fresh request.
+            // Not a clear yes/no — don't click; treat it as a fresh request. The
+            // proposed click is abandoned, so close out its run.
+            agentRunManager.fail(id: pending.runID, reason: "abandoned (no clear confirmation)")
             sendTranscriptToClaudeWithScreenshot(transcript: transcript)
         case .confirm:
             // Revalidate: refuse if the proposal is stale or the active app changed
@@ -1598,19 +1658,23 @@ final class CompanionManager: ObservableObject {
             let currentApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             guard Date().timeIntervalSince(pending.proposedAt) < 30,
                   currentApp == pending.frontmostAppBundleID else {
+                agentRunManager.fail(id: pending.runID, reason: "screen changed before confirmation")
                 speakSystemMessage("the screen changed, so i didn't click. ask me again.")
                 ClickyTelemetry.handsOn.notice("stale-rejected appChanged=\(currentApp != pending.frontmostAppBundleID, privacy: .public)")
                 return
             }
             ClickyAnalytics.trackElementPointed(elementLabel: "hands-on:" + pending.label)
             ClickyTelemetry.handsOn.notice("CONFIRMED press (labelLen)=\(pending.label.count, privacy: .public)")
+            agentRunManager.update(id: pending.runID, stage: .executing, appendLog: "confirmed — clicking")
             do {
                 try AccessibilityActuator.press(atQuartzPoint: pending.quartzPoint)
+                agentRunManager.complete(id: pending.runID, appendLog: "clicked \"\(pending.label)\"")
                 speakSystemMessage("done.")
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("🖐️ Hands-On action failed: \(error)")
                 ClickyTelemetry.handsOn.error("press failed")
+                agentRunManager.fail(id: pending.runID, reason: "click failed")
                 speakSystemMessage("i couldn't click that.")
             }
         }
@@ -1636,28 +1700,36 @@ final class CompanionManager: ObservableObject {
     /// Handles the user's spoken response to a pending terminal dispatch.
     private func resolveTerminalConfirmation(transcript: String, pending: PendingTerminalDispatch) {
         guard isTerminalBridgeEnabled else {
+            agentRunManager.fail(id: pending.runID, reason: "terminal bridge turned off")
             speakSystemMessage("terminal bridge is off.")
             return
         }
         switch Self.confirmationVerdict(for: transcript) {
         case .cancel:
+            agentRunManager.fail(id: pending.runID, reason: "cancelled by user")
             speakSystemMessage("okay, cancelled.")
         case .ambiguous:
+            // No clear yes/no — the dispatch is abandoned, so close out its run.
+            agentRunManager.fail(id: pending.runID, reason: "abandoned (no clear confirmation)")
             sendTranscriptToClaudeWithScreenshot(transcript: transcript)
         case .confirm:
             guard Date().timeIntervalSince(pending.proposedAt) < 60 else {
+                agentRunManager.fail(id: pending.runID, reason: "request expired before confirmation")
                 speakSystemMessage("that request expired, ask me again.")
                 ClickyTelemetry.terminalBridge.notice("[RUN] expired")
                 return
             }
             ClickyTelemetry.terminalBridge.notice("[RUN] CONFIRMED dispatch (promptLen)=\(pending.prompt.count, privacy: .public)")
+            agentRunManager.update(id: pending.runID, stage: .executing, appendLog: "confirmed — sending to \(pending.terminal.displayName)")
             do {
                 try TerminalAgentBridge.sendPrompt(pending.prompt, to: pending.terminal)
+                agentRunManager.complete(id: pending.runID, appendLog: "sent to \(pending.terminal.displayName)")
                 speakSystemMessage("sent to \(pending.terminal.displayName).")
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⌨️ Terminal dispatch failed: \(error)")
                 ClickyTelemetry.terminalBridge.error("dispatch failed")
+                agentRunManager.fail(id: pending.runID, reason: "dispatch failed")
                 speakSystemMessage("i couldn't send that.")
             }
         }
