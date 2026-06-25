@@ -15,8 +15,8 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
+- **Speech-to-Text**: Pluggable, user-selectable. **Apple Speech (on-device) is the default** for low-latency short push-to-talk; AssemblyAI real-time streaming (`u3-rt-pro` websocket) and OpenAI upload-on-release are selectable in Settings. Selection persists in UserDefaults (`sttProvider`), falling back to the Info.plist `VoiceTranscriptionProvider` value.
+- **Text-to-Speech**: Configurable provider layer (`TTSProviderManager`). **ElevenLabs (`eleven_flash_v2_5`) is the default**; OpenAI TTS (`gpt-4o-mini-tts`) and on-device `AVSpeechSynthesizer` (System Voice) are selectable, with per-provider voice selection + tap-to-preview. ElevenLabs/OpenAI proxy through the Worker; System Voice is fully on-device.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
@@ -30,10 +30,11 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
+| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio. Accepts an optional per-request `voiceId` in the body (stripped before forwarding); falls back to `ELEVENLABS_VOICE_ID`. |
+| `POST /tts-openai` | `api.openai.com/v1/audio/speech` | OpenAI TTS audio (`gpt-4o-mini-tts`). Body: `{ text, voice }`. |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `OPENAI_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -53,17 +54,17 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, multi-provider TTS (via `TTSProviderManager`), and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
-| `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
+| `BuddyDictationManager.swift` | ~942 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
+| `BuddyTranscriptionProvider.swift` | ~175 | Protocol surface and provider factory for voice transcription backends. Defines `STTProviderKind` (apple/assemblyai/openai) and the `cancelsOnQuickReleaseDuringSessionStart` flag (cloud cancels a release during connect; on-device keeps the short capture). Resolves the active provider from the `sttProvider` UserDefaults choice first, then Info.plist, defaulting to Apple Speech. |
 | `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
-| `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
+| `AppleSpeechTranscriptionProvider.swift` | ~152 | On-device transcription provider backed by Apple's Speech framework — now the **default** STT. Opts out of `cancelsOnQuickReleaseDuringSessionStart` so short push-to-talk holds survive. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
@@ -75,15 +76,20 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `AgentRunManager.swift` | ~175 | G5 run model + store. `@MainActor ObservableObject` holding recent `AgentRun`s (capped at 20). Defines `AgentRun` + `RunStage` (display label + DS color + SF Symbol) and `startRun`/`update`/`complete`/`fail`. UI-facing only — CompanionManager owns dispatch and reports progress here. |
 | `AgentsPanel.swift` | ~120 | G5 SwiftUI views for agent runs: `AgentsPanel` (scrollable run list + empty state) and `AgentRunCard` (title + agentLabel + stage dot, expandable to recent log lines). Liquid-glass styling (`.ultraThinMaterial` + `DS` tokens). |
 | `KeychainManager.swift` | ~50 | Generic-password Keychain wrapper for the OpenRouter key and OpenClaw/Hermes token. |
-| `SettingsView.swift` | ~305 | Provider configuration UI (provider picker, credential fields, endpoint scheme validation, Test Connection). Opened from the panel gear button. |
+| `SettingsView.swift` | ~453 | Provider configuration UI (provider picker, credential fields, endpoint scheme validation, Test Connection) plus speech-to-text, voice (TTS provider + per-voice preview), Hands-On, and on-screen surface (Hub/Dock) sections. Opened from the panel gear button. |
 | `TLSWarmer.swift` | ~40 | Shared helper that pre-establishes a TLS session per host (background HEAD) so the first large request avoids a cold handshake. |
-| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
+| `TTSProvider.swift` | ~72 | G2: `TTSProvider` protocol + `TTSProviderKind` (elevenLabs/openAI/systemVoice) + `TTSVoiceOption`. The TTS analogue of `LLMProvider`. |
+| `TTSProviderManager.swift` | ~259 | G2: `@MainActor ObservableObject` owning the active TTS provider + per-provider voice selection. Routes `speakText`/`previewVoice` through the chosen backend, refreshes Worker routes, and fails closed when a network provider has no Worker URL. Includes thin adapters conforming each client to `TTSProvider`. |
+| `ElevenLabsTTSClient.swift` | ~90 | ElevenLabs TTS client. Sends text (+ optional per-request `voiceId`) to the Worker `/tts` proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
+| `OpenAITTSClient.swift` | ~86 | G2: OpenAI TTS client. Posts `{ text, voice }` to the Worker `/tts-openai` route (server-held key), plays the returned MP3. Mirrors `ElevenLabsTTSClient`. |
+| `SystemVoiceTTSClient.swift` | ~59 | G2: on-device TTS via `AVSpeechSynthesizer` — free, instant, offline, no Worker. Also used for the lowest-latency Settings voice previews; lists the installed English macOS voices. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `SurfacePanelManager.swift` | ~300 | G4: borderless, non-activating, all-Spaces `NSPanel` for the persistent on-screen surface — corner **Hub** or notch **Dock** (Off/Hub/Dock toggle, configurable corner). Pill↔card resize on hover; `sharingType = .none`. Hosts `SurfaceView` (shows live agent-run state from `AgentRunManager`). |
+| `worker/src/index.ts` | ~217 | Cloudflare Worker proxy. Routes: `/chat` (Claude), `/tts` (ElevenLabs, per-request voice), `/tts-openai` (OpenAI TTS), `/transcribe-token` (AssemblyAI temp token), `/transcribe-audio` (OpenAI Whisper). |
 
 ## Build & Run
 
