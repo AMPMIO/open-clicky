@@ -1530,11 +1530,16 @@ final class CompanionManager: ObservableObject {
         return .ambiguous
     }
 
+    // Only genuinely irreversible / high-stakes actions are refused outright here.
+    // EVERY action is also gated behind explicit voice confirmation ("say go"), so
+    // this list stays narrow — reversible things like closing a window, quitting an
+    // app, signing out, or hitting a confirm button shouldn't be blocked. Tune as
+    // on-device testing shows what users actually want to click.
     private static let destructiveActionKeywords = [
         "delete", "remove", "trash", "discard", "erase", "wipe", "format",
-        "send", "submit", "post", "publish", "share", "pay", "purchase", "buy",
-        "checkout", "order", "quit", "close", "shut down", "shutdown", "log out",
-        "sign out", "uninstall", "deactivate", "unsubscribe", "reset", "confirm"
+        "send", "submit", "post", "publish", "pay", "purchase", "buy",
+        "checkout", "order", "shut down", "shutdown",
+        "uninstall", "deactivate", "unsubscribe", "reset"
     ]
 
     /// Whether an action label looks destructive/irreversible — a RUNTIME guardrail
