@@ -58,7 +58,7 @@
   (title + agent + stage dot, expandable log), surfaced live in the Hub. (`AgentRunManager.swift`,
   `AgentsPanel.swift`, `SurfacePanelManager.swift`, `CompanionManager.swift`) (commits fe46714, 71bd414)
 
-### G3 — Settings parity ✅ (voice + mic pickers; shipped)
+### G3 — Settings parity ✅ (voice + mic pickers + shortcut recorder; shipped)
 
 - **G3.3 voice picker + preview (OC-108).** Settings grid of voices for the active TTS provider
   with tap-to-audition (`previewVoice`, persist-before-preview), checkmark selection, pointer
@@ -73,13 +73,19 @@
   pending** for the custom-mic AVAudioEngine re-init path. (`SettingsView.swift`,
   `BuddyDictationManager.swift`) (merged in 2fb80a8)
 
+- **G3.1 user-configurable PTT shortcut recorder (OC-104).** Record-your-own hotkey in Settings
+  (record control + Reset, local+global NSEvent capture), persisted as `RecordedPushToTalkShortcut`
+  JSON, read by the CGEvent-tap matcher + panel display. Default stays right-⌘; non-blocking caution
+  on lone-modifier shortcuts. Review fixes: modifier-drop release for key+modifier, masked-equality
+  for modifier-only, deinit monitor cleanup. (`SettingsView.swift`, `BuddyDictationManager.swift`)
+  (merged in b529f78)
+
 ### In progress
 
 - **G8 — Circle-to-point reference gesture (OC-107, OC1).** Hold PTT + circle a screen region to
   ask "what's *this*?"; the overlay captures the gesture and sends the annotated screenshot.
-  CI-green; under adversarial review before merge.
-- **G3.1 — User-configurable PTT shortcut recorder (OC-104, OC2).** Record-your-own hotkey in
-  Settings, read by the PTT monitor + panel display. Branch `feature/oc104-ptt-shortcut-recorder`.
+  CI-green; applying 6 adversarial-review fixes (incl. the mouse-capture-freeze guard) before merge.
+- **G7 — Onboarding & polish (OC2).** Example prompts + "Open Agent" affordance + DS polish.
 
 ### Filed for later
 
